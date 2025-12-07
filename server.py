@@ -5,7 +5,7 @@ Enables Claude Code to collaborate with xAI's Grok AI
 
 Usage:
   As MCP server (default):  python server.py
-  Configure model:          python server.py config --model grok-4
+  Configure model:          python server.py config --model grok-4-1-fast-reasoning
   Show current config:      python server.py config --show
   List available models:    python server.py config --list-models
 """
@@ -16,21 +16,28 @@ import sys
 import os
 import signal
 import logging
+import requests
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 # Server version
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
-# Available Grok models
+# xAI API endpoint
+XAI_API_URL = "https://api.x.ai/v1/chat/completions"
+
+# Available Grok models (from xAI API)
 AVAILABLE_MODELS = {
-    "grok-4": "Flagship model (256K context)",
-    "grok-4-1-fast-reasoning": "Fast reasoning model (2M context) - Default",
-    "grok-4-fast": "Fast with reasoning (2M context)",
-    "grok-3": "Previous flagship (128K context)",
-    "grok-3-mini": "Lighter/cheaper option (128K context)",
-    "grok-2": "Grok 2 (128K context)",
-    "grok-2-vision": "Vision capable (32K context)",
+    "grok-4-1-fast-reasoning": "Grok 4.1 Fast with reasoning (2M context) - Default",
+    "grok-4-1-fast-non-reasoning": "Grok 4.1 Fast without reasoning (2M context)",
+    "grok-4-fast-reasoning": "Grok 4 Fast with reasoning",
+    "grok-4-fast-non-reasoning": "Grok 4 Fast without reasoning",
+    "grok-4-0709": "Grok 4 (July 2025 release)",
+    "grok-3": "Grok 3 - Previous flagship (128K context)",
+    "grok-3-mini": "Grok 3 Mini - Lighter/cheaper option (128K context)",
+    "grok-2-1212": "Grok 2 (128K context)",
+    "grok-2-vision-1212": "Grok 2 Vision (32K context)",
+    "grok-code-fast-1": "Grok Code Fast - Optimized for coding",
 }
 
 # Config file location
@@ -137,6 +144,9 @@ DEFAULT_MODEL = get_default_model()
 shutdown_requested = False
 logger = None
 
+# API key storage
+API_KEY = None
+
 def handle_shutdown(signum, frame):
     """Handle shutdown signals gracefully"""
     global shutdown_requested
@@ -147,39 +157,23 @@ def handle_shutdown(signum, frame):
 # Initialize Grok
 GROK_AVAILABLE = False
 GROK_ERROR = ""
-client = None
 
 def init_grok() -> bool:
-    """Initialize Grok client with proper error handling"""
-    global GROK_AVAILABLE, GROK_ERROR, client
+    """Initialize Grok API with proper error handling"""
+    global GROK_AVAILABLE, GROK_ERROR, API_KEY
 
-    try:
-        from xai_sdk import Client
-
-        # Get API key from environment only - no hardcoded fallback
-        api_key = os.environ.get("XAI_API_KEY")
-        if not api_key:
-            GROK_ERROR = "XAI_API_KEY environment variable is not set"
-            if logger:
-                logger.error(GROK_ERROR)
-            return False
-
-        client = Client(api_key=api_key)
-        GROK_AVAILABLE = True
-        if logger:
-            logger.info(f"Grok client initialized successfully with model: {DEFAULT_MODEL}")
-        return True
-
-    except ImportError as e:
-        GROK_ERROR = "xai-sdk package not installed. Run: pip install xai-sdk"
+    # Get API key from environment
+    API_KEY = os.environ.get("XAI_API_KEY")
+    if not API_KEY:
+        GROK_ERROR = "XAI_API_KEY environment variable is not set"
         if logger:
             logger.error(GROK_ERROR)
         return False
-    except Exception as e:
-        GROK_ERROR = str(e)
-        if logger:
-            logger.error(f"Failed to initialize Grok client: {GROK_ERROR}")
-        return False
+
+    GROK_AVAILABLE = True
+    if logger:
+        logger.info(f"Grok API initialized successfully with model: {DEFAULT_MODEL}")
+    return True
 
 def send_response(response: Dict[str, Any]):
     """Send a JSON-RPC response"""
@@ -299,21 +293,52 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
     }
 
 def call_grok(prompt: str, system_prompt: Optional[str] = None) -> str:
-    """Call Grok and return response"""
-    from xai_sdk.chat import system, user
-
+    """Call Grok API directly via HTTP and return response"""
     try:
+        # Build messages array
         messages = []
         if system_prompt:
-            messages.append(system(system_prompt))
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
 
-        chat = client.chat.create(
-            model=DEFAULT_MODEL,
-            messages=messages
+        # Build request payload
+        payload = {
+            "model": DEFAULT_MODEL,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.7
+        }
+
+        # Make request using requests library
+        response = requests.post(
+            XAI_API_URL,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {API_KEY}"
+            },
+            timeout=120
         )
-        chat.append(user(prompt))
-        response = chat.sample()
-        return response.content
+
+        # Check for errors
+        if response.status_code != 200:
+            logger.error(f"HTTP error calling Grok: {response.status_code} - {response.text}")
+            return f"Error calling Grok (HTTP {response.status_code}): {response.text}"
+
+        result = response.json()
+
+        # Extract response content
+        if "choices" in result and len(result["choices"]) > 0:
+            return result["choices"][0]["message"]["content"]
+        else:
+            return f"Unexpected response format: {result}"
+
+    except requests.exceptions.Timeout:
+        logger.error("Timeout calling Grok")
+        return "Error calling Grok: Request timed out"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error calling Grok: {e}")
+        return f"Error calling Grok: {str(e)}"
     except Exception as e:
         logger.error(f"Error calling Grok: {e}")
         return f"Error calling Grok: {str(e)}"
@@ -418,6 +443,8 @@ def main():
     global shutdown_requested
 
     logger.info(f"Starting Grok MCP server v{__version__}")
+    logger.info(f"Using direct HTTP API (no SDK)")
+    logger.info(f"Model: {DEFAULT_MODEL}")
     logger.info(f"Grok available: {GROK_AVAILABLE}")
     if not GROK_AVAILABLE:
         logger.warning(f"Grok initialization failed: {GROK_ERROR}")
@@ -517,7 +544,7 @@ def run_server():
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    # Initialize Grok client
+    # Initialize Grok API
     init_grok()
 
     # Run main loop
@@ -530,10 +557,10 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python server.py                          Run as MCP server
-  python server.py config --model grok-4    Set default model
-  python server.py config --show            Show current config
-  python server.py config --list-models     List available models
+  python server.py                                       Run as MCP server
+  python server.py config --model grok-4-1-fast-reasoning  Set default model
+  python server.py config --show                         Show current config
+  python server.py config --list-models                  List available models
         """
     )
     subparsers = parser.add_subparsers(dest="command")

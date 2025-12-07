@@ -15,7 +15,7 @@ Connect Claude Code with xAI's Grok AI for powerful AI collaboration. Ask Grok q
 
 - **Python 3.10+** - [Download here](https://www.python.org/downloads/)
 - **Claude Code CLI** - [Installation guide](https://docs.anthropic.com/claude-code)
-- **xai-sdk** - Install with: `pip install xai-sdk`
+- **requests library** - Install with: `pip install requests`
 
 ### Step 3: Install the MCP Server
 
@@ -40,13 +40,13 @@ Replace `YOUR_API_KEY` with your actual xAI API key:
 
 ```bash
 # User scope (recommended) - works in all your projects
-claude mcp add -s user -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_API_KEY"
+claude mcp add -s user -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_API_KEY"
 
 # OR Project scope - shared with team via .mcp.json
-claude mcp add -s project -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_API_KEY"
+claude mcp add -s project -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_API_KEY"
 
 # OR Local scope - only for testing in current directory
-claude mcp add -s local -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_API_KEY"
+claude mcp add -s local -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_API_KEY"
 ```
 
 ### Step 4: Restart Claude Code
@@ -83,34 +83,40 @@ Or ask naturally:
 
 ## Changing the Default Model
 
-The default model is `grok-4-1-fast-reasoning`. To change it:
+The default model is `grok-4-1-fast-reasoning` (Grok 4.1 Fast with reasoning, 2M context window).
 
 ### 1. See available models
 
 Run this from the `claude-code-grok-mcp` folder you cloned:
 
 ```bash
-python server.py config --list-models
+python3 server.py config --list-models
 ```
 
 Output:
 ```
 Available Grok models:
 --------------------------------------------------
-  grok-4
-    Flagship model (256K context)
   grok-4-1-fast-reasoning *
-    Fast reasoning model (2M context) - Default
-  grok-4-fast
-    Fast with reasoning (2M context)
+    Grok 4.1 Fast with reasoning (2M context) - Default
+  grok-4-1-fast-non-reasoning
+    Grok 4.1 Fast without reasoning (2M context)
+  grok-4-fast-reasoning
+    Grok 4 Fast with reasoning
+  grok-4-fast-non-reasoning
+    Grok 4 Fast without reasoning
+  grok-4-0709
+    Grok 4 (July 2025 release)
   grok-3
-    Previous flagship (128K context)
+    Grok 3 - Previous flagship (128K context)
   grok-3-mini
-    Lighter/cheaper option (128K context)
-  grok-2
+    Grok 3 Mini - Lighter/cheaper option (128K context)
+  grok-2-1212
     Grok 2 (128K context)
-  grok-2-vision
-    Vision capable (32K context)
+  grok-2-vision-1212
+    Grok 2 Vision (32K context)
+  grok-code-fast-1
+    Grok Code Fast - Optimized for coding
 
 * = currently selected
 ```
@@ -118,7 +124,7 @@ Available Grok models:
 ### 2. Set your preferred model
 
 ```bash
-python server.py config --model grok-4
+python3 server.py config --model grok-4-0709
 ```
 
 ### 3. Restart Claude Code
@@ -138,7 +144,7 @@ If you entered the wrong API key, reinstall with the correct one:
 claude mcp remove Grok
 
 # Reinstall with the correct API key (use the same scope you installed with)
-claude mcp add -s user -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_CORRECT_API_KEY"
+claude mcp add -s user -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_CORRECT_API_KEY"
 ```
 
 Then restart Claude Code.
@@ -157,16 +163,22 @@ claude mcp list
 ### Connection Errors
 
 1. **Verify your API key** is valid at [console.x.ai](https://console.x.ai/)
-2. **Check Python version**: `python --version` (needs 3.10+)
-3. **Ensure xai-sdk is installed**: `pip install xai-sdk`
+2. **Check Python version**: `python3 --version` (needs 3.10+)
+3. **Ensure requests is installed**: `pip install requests`
 
 ### View Current Configuration
 
 Run this from the `claude-code-grok-mcp` folder:
 
 ```bash
-python server.py config --show
+python3 server.py config --show
 ```
+
+---
+
+## How It Works
+
+This MCP server uses the xAI REST API directly (OpenAI-compatible format) to communicate with Grok models. No SDK required - just the `requests` library for HTTP calls.
 
 ---
 
