@@ -19,26 +19,34 @@ Connect Claude Code with xAI's Grok AI for powerful AI collaboration. Ask Grok q
 
 ### Step 3: Install the MCP Server
 
-#### Linux/macOS
+#### Clone the repository
 
 ```bash
-# Clone the repository
 git clone https://github.com/wynandw87/claude-code-grok-mcp.git
 cd claude-code-grok-mcp
-
-# Install the MCP server (replace YOUR_API_KEY with your actual key)
-claude mcp add -s user -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_API_KEY"
 ```
 
-#### Windows (PowerShell)
+#### Choose your install scope
 
-```powershell
-# Clone the repository
-git clone https://github.com/wynandw87/claude-code-grok-mcp.git
-cd claude-code-grok-mcp
+| Scope | Command | Who can use it |
+|-------|---------|----------------|
+| **User** (recommended) | `-s user` | You, in any project |
+| **Project** | `-s project` | Anyone who clones this repo |
+| **Local** | `-s local` | Only in current directory |
 
-# Install the MCP server (replace YOUR_API_KEY with your actual key)
+#### Install command
+
+Replace `YOUR_API_KEY` with your actual xAI API key:
+
+```bash
+# User scope (recommended) - works in all your projects
 claude mcp add -s user -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_API_KEY"
+
+# OR Project scope - shared with team via .mcp.json
+claude mcp add -s project -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_API_KEY"
+
+# OR Local scope - only for testing in current directory
+claude mcp add -s local -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_API_KEY"
 ```
 
 ### Step 4: Restart Claude Code
