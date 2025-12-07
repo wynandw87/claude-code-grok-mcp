@@ -137,11 +137,13 @@ If you entered the wrong API key, reinstall with the correct one:
 # Remove the old installation
 claude mcp remove Grok
 
-# Reinstall with the correct API key
+# Reinstall with the correct API key (use the same scope you installed with)
 claude mcp add -s user -t stdio Grok python server.py -e "XAI_API_KEY=YOUR_CORRECT_API_KEY"
 ```
 
 Then restart Claude Code.
+
+> **Note:** Replace `-s user` with `-s project` or `-s local` if you originally installed with a different scope.
 
 ### MCP Server Not Showing Up
 

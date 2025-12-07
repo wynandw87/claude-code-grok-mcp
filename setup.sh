@@ -1,6 +1,7 @@
 #!/bin/bash
 # Claude Code + Grok MCP Server Setup Script
 # Usage: ./setup.sh YOUR_XAI_API_KEY
+# Installs with 'user' scope (available in all your projects)
 
 set -e
 

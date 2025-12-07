@@ -1,5 +1,6 @@
 # Claude Code + Grok MCP Server Setup Script for Windows
 # Usage: .\setup.ps1 -ApiKey "YOUR_XAI_API_KEY"
+# Installs with 'user' scope (available in all your projects)
 
 param(
     [Parameter(Mandatory=$true)]
