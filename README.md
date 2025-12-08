@@ -18,26 +18,28 @@ Connect Claude Code with xAI's Grok AI for powerful AI collaboration. Ask Grok q
 
 ### Step 3: Install the MCP Server
 
-#### Clone the repository
+#### 3.1 Clone the repository
 
-```bash
+```text
 git clone https://github.com/wynandw87/claude-code-grok-mcp.git
 cd claude-code-grok-mcp
 ```
 
-#### Install dependencies
+#### 3.2 Install dependencies
 
 **macOS / Linux:**
-```bash
+```text
 pip3 install -r requirements.txt
 ```
 
 **Windows:**
-```powershell
+```text
 pip install -r requirements.txt
 ```
 
-#### Choose your install scope
+#### 3.3 Register with Claude Code
+
+Choose your install scope:
 
 | Scope | Flag | Who can use it |
 |-------|------|----------------|
@@ -45,48 +47,42 @@ pip install -r requirements.txt
 | **Project** | `-s project` | Anyone who clones this repo |
 | **Local** | `-s local` | Only in current directory |
 
-#### Install command
+Replace `YOUR_API_KEY` with your actual xAI API key, and use the full path to `server.py`.
 
-Replace `YOUR_API_KEY` with your actual xAI API key.
-
-**macOS / Linux** (user scope - recommended):
-```
+**macOS / Linux:**
+```text
 claude mcp add -s user -t stdio Grok python3 /full/path/to/server.py -e XAI_API_KEY=YOUR_API_KEY
 ```
 
-**Windows** (user scope - recommended):
-```
+**Windows:**
+```text
 claude mcp add -s user -t stdio Grok python C:\full\path\to\server.py -e XAI_API_KEY=YOUR_API_KEY
 ```
 
-> **Important:** Replace `/full/path/to/server.py` or `C:\full\path\to\server.py` with the actual path where you cloned the repository.
-
-For other scopes, replace `-s user` with `-s project` (shared with team) or `-s local` (current directory only).
-
-> **Note:** Windows uses `python` while macOS/Linux use `python3`.
+> **Note:** Windows uses `python` while macOS/Linux use `python3`. Use the full absolute path to where you cloned the repository.
 
 #### Alternative: Use Setup Scripts
 
-Instead of manual installation, you can use the provided setup scripts that handle everything automatically:
+The setup scripts handle dependency installation and registration automatically.
 
 **macOS / Linux:**
-```bash
+```text
 chmod +x setup.sh
 ./setup.sh YOUR_API_KEY
 ```
 
 **Windows (PowerShell):**
-```powershell
-.\setup.ps1 -ApiKey "YOUR_API_KEY"
+```text
+.\setup.ps1 -ApiKey YOUR_API_KEY
 ```
 
 ### Step 4: Restart Claude Code
 
-Close and reopen Claude Code. The Grok tools are now available!
+Close and reopen Claude Code for the changes to take effect.
 
 ### Step 5: Verify Installation
 
-```bash
+```text
 claude mcp list
 ```
 
@@ -96,7 +92,7 @@ You should see `Grok` listed with a ✓ Connected status.
 
 ## Usage
 
-Once installed, just use trigger phrases to invoke Grok:
+Once installed, use trigger phrases to invoke Grok:
 
 | Trigger | Tool | Example |
 |---------|------|---------|
@@ -118,19 +114,19 @@ The default model is `grok-4-1-fast-reasoning` (Grok 4.1 Fast with reasoning, 2M
 
 ### 1. See available models
 
-Run this from the `claude-code-grok-mcp` folder you cloned:
+Run from the `claude-code-grok-mcp` folder:
 
 **macOS / Linux:**
-```bash
+```text
 python3 server.py config --list-models
 ```
 
 **Windows:**
-```powershell
+```text
 python server.py config --list-models
 ```
 
-Output:
+**Output:**
 ```
 Available Grok models:
 --------------------------------------------------
@@ -161,12 +157,12 @@ Available Grok models:
 ### 2. Set your preferred model
 
 **macOS / Linux:**
-```bash
+```text
 python3 server.py config --model grok-4-0709
 ```
 
 **Windows:**
-```powershell
+```text
 python server.py config --model grok-4-0709
 ```
 
@@ -178,49 +174,49 @@ Close and reopen Claude Code for the change to take effect.
 
 ## Troubleshooting
 
-### Fix API Key (typo or needs updating)
+### Fix API Key
 
-If you entered the wrong API key, reinstall with the correct one:
+If you entered the wrong API key, remove and reinstall:
 
-```bash
-# Remove the old installation
+```text
 claude mcp remove Grok
 ```
 
-Then reinstall using the appropriate command for your platform (see Step 3 above).
-
-> **Note:** Use the same scope (`-s user`, `-s project`, or `-s local`) you originally installed with.
+Then reinstall using the command from Step 3.3 above (use the same scope you originally installed with).
 
 ### MCP Server Not Showing Up
 
-```bash
-# Check if installed
-claude mcp list
+Check if the server is installed:
 
-# If not listed, install it (see Step 3 above)
+```text
+claude mcp list
 ```
+
+If not listed, follow Step 3 to install it.
 
 ### Connection Errors
 
 1. **Verify your API key** is valid at [console.x.ai](https://console.x.ai/)
+
 2. **Check Python version** (needs 3.10+):
    - macOS/Linux: `python3 --version`
    - Windows: `python --version`
+
 3. **Ensure requests is installed**:
    - macOS/Linux: `pip3 install requests`
    - Windows: `pip install requests`
 
 ### View Current Configuration
 
-Run this from the `claude-code-grok-mcp` folder:
+Run from the `claude-code-grok-mcp` folder:
 
 **macOS / Linux:**
-```bash
+```text
 python3 server.py config --show
 ```
 
 **Windows:**
-```powershell
+```text
 python server.py config --show
 ```
 
