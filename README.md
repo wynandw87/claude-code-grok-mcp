@@ -15,7 +15,6 @@ Connect Claude Code with xAI's Grok AI for powerful AI collaboration. Ask Grok q
 
 - **Python 3.10+** - [Download here](https://www.python.org/downloads/)
 - **Claude Code CLI** - [Installation guide](https://docs.anthropic.com/claude-code)
-- **requests library** - Install with: `pip install requests`
 
 ### Step 3: Install the MCP Server
 
@@ -26,27 +25,69 @@ git clone https://github.com/wynandw87/claude-code-grok-mcp.git
 cd claude-code-grok-mcp
 ```
 
+#### Install dependencies
+
+**macOS / Linux:**
+```bash
+pip3 install -r requirements.txt
+```
+
+**Windows:**
+```powershell
+pip install -r requirements.txt
+```
+
 #### Choose your install scope
 
-| Scope | Command | Who can use it |
-|-------|---------|----------------|
+| Scope | Flag | Who can use it |
+|-------|------|----------------|
 | **User** (recommended) | `-s user` | You, in any project |
 | **Project** | `-s project` | Anyone who clones this repo |
 | **Local** | `-s local` | Only in current directory |
 
 #### Install command
 
-Replace `YOUR_API_KEY` with your actual xAI API key:
+Replace `YOUR_API_KEY` with your actual xAI API key.
 
+**macOS / Linux:**
 ```bash
 # User scope (recommended) - works in all your projects
-claude mcp add -s user -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_API_KEY"
+claude mcp add -s user -t stdio Grok python3 "$(pwd)/server.py" -e "XAI_API_KEY=YOUR_API_KEY"
 
 # OR Project scope - shared with team via .mcp.json
-claude mcp add -s project -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_API_KEY"
+claude mcp add -s project -t stdio Grok python3 "$(pwd)/server.py" -e "XAI_API_KEY=YOUR_API_KEY"
 
 # OR Local scope - only for testing in current directory
-claude mcp add -s local -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_API_KEY"
+claude mcp add -s local -t stdio Grok python3 "$(pwd)/server.py" -e "XAI_API_KEY=YOUR_API_KEY"
+```
+
+**Windows (PowerShell):**
+```powershell
+# User scope (recommended) - works in all your projects
+claude mcp add -s user -t stdio Grok python "$PWD\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
+
+# OR Project scope - shared with team via .mcp.json
+claude mcp add -s project -t stdio Grok python "$PWD\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
+
+# OR Local scope - only for testing in current directory
+claude mcp add -s local -t stdio Grok python "$PWD\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
+```
+
+> **Note:** Windows uses `python` while macOS/Linux use `python3`. The full path to `server.py` is required for the server to work from any directory.
+
+#### Alternative: Use Setup Scripts
+
+Instead of manual installation, you can use the provided setup scripts that handle everything automatically:
+
+**macOS / Linux:**
+```bash
+chmod +x setup.sh
+./setup.sh YOUR_API_KEY
+```
+
+**Windows (PowerShell):**
+```powershell
+.\setup.ps1 -ApiKey "YOUR_API_KEY"
 ```
 
 ### Step 4: Restart Claude Code
@@ -89,8 +130,14 @@ The default model is `grok-4-1-fast-reasoning` (Grok 4.1 Fast with reasoning, 2M
 
 Run this from the `claude-code-grok-mcp` folder you cloned:
 
+**macOS / Linux:**
 ```bash
 python3 server.py config --list-models
+```
+
+**Windows:**
+```powershell
+python server.py config --list-models
 ```
 
 Output:
@@ -123,8 +170,14 @@ Available Grok models:
 
 ### 2. Set your preferred model
 
+**macOS / Linux:**
 ```bash
 python3 server.py config --model grok-4-0709
+```
+
+**Windows:**
+```powershell
+python server.py config --model grok-4-0709
 ```
 
 ### 3. Restart Claude Code
@@ -142,14 +195,11 @@ If you entered the wrong API key, reinstall with the correct one:
 ```bash
 # Remove the old installation
 claude mcp remove Grok
-
-# Reinstall with the correct API key (use the same scope you installed with)
-claude mcp add -s user -t stdio Grok python3 server.py -e "XAI_API_KEY=YOUR_CORRECT_API_KEY"
 ```
 
-Then restart Claude Code.
+Then reinstall using the appropriate command for your platform (see Step 3 above).
 
-> **Note:** Replace `-s user` with `-s project` or `-s local` if you originally installed with a different scope.
+> **Note:** Use the same scope (`-s user`, `-s project`, or `-s local`) you originally installed with.
 
 ### MCP Server Not Showing Up
 
@@ -163,15 +213,25 @@ claude mcp list
 ### Connection Errors
 
 1. **Verify your API key** is valid at [console.x.ai](https://console.x.ai/)
-2. **Check Python version**: `python3 --version` (needs 3.10+)
-3. **Ensure requests is installed**: `pip install requests`
+2. **Check Python version** (needs 3.10+):
+   - macOS/Linux: `python3 --version`
+   - Windows: `python --version`
+3. **Ensure requests is installed**:
+   - macOS/Linux: `pip3 install requests`
+   - Windows: `pip install requests`
 
 ### View Current Configuration
 
 Run this from the `claude-code-grok-mcp` folder:
 
+**macOS / Linux:**
 ```bash
 python3 server.py config --show
+```
+
+**Windows:**
+```powershell
+python server.py config --show
 ```
 
 ---

@@ -51,13 +51,13 @@ if ! command -v claude &> /dev/null; then
 fi
 echo -e "${GREEN}✓ Claude Code CLI found${NC}"
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Install Python dependencies
 echo ""
 echo "Installing Python dependencies..."
-pip3 install xai-sdk --quiet
-
-# Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+pip3 install -r "$SCRIPT_DIR/requirements.txt" --quiet
 
 # Remove any existing MCP configuration
 echo ""

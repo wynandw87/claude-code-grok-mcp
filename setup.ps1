@@ -40,14 +40,14 @@ try {
     exit 1
 }
 
-# Install Python dependencies
-Write-Host ""
-Write-Host "Installing Python dependencies..." -ForegroundColor Yellow
-pip install xai-sdk --quiet
-
 # Get the directory where this script is located
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $serverPath = Join-Path $scriptDir "server.py"
+
+# Install Python dependencies
+Write-Host ""
+Write-Host "Installing Python dependencies..." -ForegroundColor Yellow
+pip install -r (Join-Path $scriptDir "requirements.txt") --quiet
 
 # Remove any existing MCP configuration
 Write-Host ""
