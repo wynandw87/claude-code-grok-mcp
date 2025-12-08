@@ -49,31 +49,21 @@ pip install -r requirements.txt
 
 Replace `YOUR_API_KEY` with your actual xAI API key.
 
-**macOS / Linux:**
-```bash
-# User scope (recommended) - works in all your projects
-claude mcp add -s user -t stdio Grok python3 "$(pwd)/server.py" -e "XAI_API_KEY=YOUR_API_KEY"
-
-# OR Project scope - shared with team via .mcp.json
-claude mcp add -s project -t stdio Grok python3 "$(pwd)/server.py" -e "XAI_API_KEY=YOUR_API_KEY"
-
-# OR Local scope - only for testing in current directory
-claude mcp add -s local -t stdio Grok python3 "$(pwd)/server.py" -e "XAI_API_KEY=YOUR_API_KEY"
+**macOS / Linux** (user scope - recommended):
+```
+claude mcp add -s user -t stdio Grok python3 /full/path/to/server.py -e XAI_API_KEY=YOUR_API_KEY
 ```
 
-**Windows (PowerShell):**
-```powershell
-# User scope (recommended) - works in all your projects
-claude mcp add -s user -t stdio Grok python "$PWD\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
-
-# OR Project scope - shared with team via .mcp.json
-claude mcp add -s project -t stdio Grok python "$PWD\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
-
-# OR Local scope - only for testing in current directory
-claude mcp add -s local -t stdio Grok python "$PWD\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
+**Windows** (user scope - recommended):
+```
+claude mcp add -s user -t stdio Grok python C:\full\path\to\server.py -e XAI_API_KEY=YOUR_API_KEY
 ```
 
-> **Note:** Windows uses `python` while macOS/Linux use `python3`. The full path to `server.py` is required for the server to work from any directory.
+> **Important:** Replace `/full/path/to/server.py` or `C:\full\path\to\server.py` with the actual path where you cloned the repository.
+
+For other scopes, replace `-s user` with `-s project` (shared with team) or `-s local` (current directory only).
+
+> **Note:** Windows uses `python` while macOS/Linux use `python3`.
 
 #### Alternative: Use Setup Scripts
 
