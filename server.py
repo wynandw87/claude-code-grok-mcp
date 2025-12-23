@@ -29,6 +29,7 @@ XAI_API_URL = "https://api.x.ai/v1/chat/completions"
 # Available Grok models (from xAI API)
 AVAILABLE_MODELS = {
     "grok-4-1-fast-reasoning": "Grok 4.1 Fast with reasoning (2M context) - Default",
+    "grok-4": "Grok 4 flagship model",
     "grok-4-1-fast-non-reasoning": "Grok 4.1 Fast without reasoning (2M context)",
     "grok-4-fast-reasoning": "Grok 4 Fast with reasoning",
     "grok-4-fast-non-reasoning": "Grok 4 Fast without reasoning",
