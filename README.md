@@ -1,6 +1,6 @@
 # Claude Code + Grok MCP Server
 
-Connect Claude Code with xAI's Grok AI for powerful AI collaboration. Ask Grok questions, get code reviews, brainstorm ideas, generate images, and analyze images with vision - all within Claude Code!
+MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, and vision analysis. Supports Grok 4.1, Aurora, and Vision models.
 
 ## Quick Start
 
@@ -99,6 +99,10 @@ Once installed, use trigger phrases to invoke Grok:
 | `use grok`, `ask grok`, `grok:` | Ask | "use grok: what is quantum computing?" |
 | `grok review`, `have grok review` | Code Review | "grok review this function for security" |
 | `grok brainstorm`, `grok ideas` | Brainstorm | "grok brainstorm ideas for authentication" |
+| `grok search`, `grok web search` | Web Search | "grok search for latest React 19 features" |
+| `grok search x`, `grok twitter search` | X Search | "grok search x for posts about Claude Code" |
+| `grok run code`, `grok calculate` | Run Code | "grok calculate the first 50 prime numbers" |
+| `grok upload file` | Upload File | "grok upload file at ./report.pdf" |
 | `grok generate image`, `grok image` | Generate Image | "grok generate image of a sunset over mountains" |
 | `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
 
@@ -107,10 +111,57 @@ Or ask naturally:
 - *"Ask Grok what it thinks about this approach"*
 - *"Have Grok review this code for security issues"*
 - *"Brainstorm with Grok about scaling strategies"*
+- *"Grok search the web for the latest news on AI"*
+- *"Grok search X for what people are saying about TypeScript 6"*
+- *"Grok run code to calculate compound interest over 10 years"*
+- *"Upload this CSV to Grok and ask it to summarize the data"*
 - *"Grok generate an image of a futuristic city"*
 - *"Grok describe what's in this screenshot"*
 
 ---
+
+## Web Search
+
+Search the web with real-time results and citations. Grok autonomously searches, browses pages, and synthesizes answers.
+
+**Parameters:**
+- `query` (required) — the search query or question
+- `allowed_domains` (optional) — only search within these domains (max 5)
+- `excluded_domains` (optional) — exclude these domains from search (max 5)
+
+Results include inline citations with source URLs.
+
+## X / Twitter Search
+
+Search X (Twitter) posts. Find tweets, threads, and discussions from specific users or timeframes.
+
+**Parameters:**
+- `query` (required) — the search query
+- `allowed_x_handles` (optional) — only search posts from these handles (max 10, without @ prefix)
+- `excluded_x_handles` (optional) — exclude posts from these handles (max 10)
+- `from_date` (optional) — start date (YYYY-MM-DD)
+- `to_date` (optional) — end date (YYYY-MM-DD)
+
+## Code Execution
+
+Execute Python code in Grok's sandboxed environment. Pre-installed libraries include NumPy, Pandas, Matplotlib, and SciPy.
+
+**Parameters:**
+- `prompt` (required) — description of what to compute or analyze
+
+Grok writes and executes Python code automatically. Useful for calculations, data analysis, and generating visualizations.
+
+## File Upload & Analysis
+
+Upload documents for Grok to analyze. Optionally ask a question about the file immediately.
+
+**Parameters:**
+- `file_path` (required) — absolute path to the file
+- `query` (optional) — question to ask about the file after upload
+
+**Supported file types:** txt, md, py, js, ts, java, c, cpp, go, rs, rb, php, css, html, xml, yaml, json, csv, pdf, sql, and more. Max 48MB per file.
+
+Returns a file ID that can be reused with the `ask` tool's `file_ids` parameter for follow-up questions.
 
 ## Image Generation
 
@@ -140,6 +191,7 @@ Analyze images using Grok's vision model (`grok-2-vision-1212`).
 |----------|-------------|---------|
 | `XAI_API_KEY` | Your xAI API key (required) | — |
 | `GROK_OUTPUT_DIR` | Directory for auto-saved generated images | `./generated-images` |
+| `GROK_TIMEOUT` | Default timeout in seconds for API calls | `180` |
 
 ---
 
@@ -259,14 +311,18 @@ python server.py config --show
 
 ## How It Works
 
-This MCP server uses the xAI REST API directly (OpenAI-compatible format) to communicate with Grok models. No SDK required - just the `requests` library for HTTP calls.
+This MCP server uses the xAI REST API directly to communicate with Grok models. No SDK required — just the `requests` library for HTTP calls. Text-based tools use the Responses API (`/v1/responses`) with server-side tool support, while image and vision tools use their dedicated endpoints.
 
 **Tools provided:**
 | Tool | API | Model |
 |------|-----|-------|
-| `ask` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `code_review` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `brainstorm` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `ask` | Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `code_review` | Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `brainstorm` | Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `search_web` | Responses + web_search | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `search_x` | Responses + x_search | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `run_code` | Responses + code_interpreter | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `upload_file` | Files + Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
 | `generate_image` | Image Generations | `grok-2-image` (Aurora) |
 | `analyze_image` | Chat Completions | `grok-2-vision-1212` |
 

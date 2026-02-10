@@ -23,14 +23,31 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 # Server version
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 # xAI API endpoints
-XAI_API_URL = "https://api.x.ai/v1/chat/completions"
+XAI_CHAT_API_URL = "https://api.x.ai/v1/chat/completions"
+XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses"
 XAI_IMAGE_API_URL = "https://api.x.ai/v1/images/generations"
+XAI_FILES_API_URL = "https://api.x.ai/v1/files"
+
+# Timeouts (seconds)
+TIMEOUT_DEFAULT = int(os.environ.get("GROK_TIMEOUT", "180"))
+TIMEOUT_TOOLS = 300   # web_search, x_search, code_interpreter
+TIMEOUT_UPLOAD = 120
+TIMEOUT_IMAGE = 120
 
 # Default output directory for generated images
 OUTPUT_DIR = os.environ.get("GROK_OUTPUT_DIR", "./generated-images")
+
+# File upload limits
+MAX_FILE_SIZE_MB = 48
+SUPPORTED_FILE_EXTENSIONS = {
+    ".txt", ".md", ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp",
+    ".h", ".go", ".rs", ".rb", ".php", ".css", ".html", ".xml", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".sh", ".bat", ".ps1", ".csv", ".json", ".jsonl",
+    ".pdf", ".log", ".sql", ".r", ".swift", ".kt", ".scala", ".lua",
+}
 
 # Available Grok models (from xAI API)
 AVAILABLE_MODELS = {
@@ -196,6 +213,256 @@ def truncate_input(text: str, max_length: int, field_name: str) -> str:
         return text[:max_length]
     return text
 
+# ---------------------------------------------------------------------------
+# Responses API helpers
+# ---------------------------------------------------------------------------
+
+def build_tool_spec(tool_type: str, **kwargs) -> Dict[str, Any]:
+    """Build a server-side tool specification for the Responses API."""
+    spec: Dict[str, Any] = {"type": tool_type}
+    for key, value in kwargs.items():
+        if value is not None:
+            spec[key] = value
+    return spec
+
+def parse_responses_output(response_json: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse the Responses API output array into a structured result."""
+    text_parts: List[str] = []
+    citations: List[Dict[str, str]] = []
+
+    for item in response_json.get("output", []):
+        # Handle message items
+        if item.get("type") == "message":
+            for block in item.get("content", []):
+                if block.get("type") == "output_text":
+                    text_parts.append(block.get("text", ""))
+                    # Collect inline annotations/citations
+                    for ann in block.get("annotations", []):
+                        if ann.get("type") == "url_citation":
+                            citations.append({
+                                "url": ann.get("url", ""),
+                                "title": ann.get("title", ""),
+                            })
+
+    usage = response_json.get("usage", {})
+    return {
+        "text": "\n".join(text_parts),
+        "citations": citations,
+        "usage": usage,
+    }
+
+def format_citations(citations: List[Dict[str, str]]) -> str:
+    """Format citation objects into a markdown Sources section."""
+    if not citations:
+        return ""
+    seen = set()
+    lines = ["", "**Sources:**"]
+    for c in citations:
+        url = c.get("url", "")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        title = c.get("title", url)
+        lines.append(f"- [{title}]({url})")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+def call_grok_responses(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    file_ids: Optional[List[str]] = None,
+    timeout: int = TIMEOUT_DEFAULT,
+) -> Dict[str, Any]:
+    """Call xAI Responses API and return structured result."""
+    # Build input array
+    input_items: List[Dict[str, Any]] = []
+    if system_prompt:
+        input_items.append({"role": "developer", "content": system_prompt})
+
+    # Build user content
+    if file_ids:
+        content_parts: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+        for fid in file_ids:
+            content_parts.append({"type": "input_file", "file_id": fid})
+        input_items.append({"role": "user", "content": content_parts})
+    else:
+        input_items.append({"role": "user", "content": prompt})
+
+    payload: Dict[str, Any] = {
+        "model": DEFAULT_MODEL,
+        "input": input_items,
+        "store": False,
+    }
+
+    if tools:
+        payload["tools"] = tools
+        # Enable inline citations when search tools are present
+        search_types = {"web_search", "x_search"}
+        if any(t.get("type") in search_types for t in tools):
+            payload["inline_citations"] = True
+
+    response = requests.post(
+        XAI_RESPONSES_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=timeout,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Grok API error (HTTP {response.status_code}): {response.text}")
+
+    return parse_responses_output(response.json())
+
+# ---------------------------------------------------------------------------
+# File upload helpers
+# ---------------------------------------------------------------------------
+
+def validate_file_path(file_path: str, max_size_mb: int = MAX_FILE_SIZE_MB) -> str:
+    """Validate file exists, size, extension. Returns absolute path."""
+    abs_path = os.path.abspath(file_path)
+    if not os.path.isfile(abs_path):
+        raise ValueError(f"File not found: {abs_path}")
+    size_mb = os.path.getsize(abs_path) / (1024 * 1024)
+    if size_mb > max_size_mb:
+        raise ValueError(f"File too large: {size_mb:.1f}MB (max {max_size_mb}MB)")
+    ext = Path(abs_path).suffix.lower()
+    if ext not in SUPPORTED_FILE_EXTENSIONS:
+        raise ValueError(f"Unsupported file type: {ext}. Supported: {', '.join(sorted(SUPPORTED_FILE_EXTENSIONS))}")
+    return abs_path
+
+def upload_file_to_xai(file_path: str) -> Dict[str, Any]:
+    """Upload a file to xAI Files API. Returns {file_id, filename}."""
+    abs_path = validate_file_path(file_path)
+    filename = os.path.basename(abs_path)
+
+    with open(abs_path, "rb") as f:
+        response = requests.post(
+            XAI_FILES_API_URL,
+            files={"file": (filename, f)},
+            data={"purpose": "assistants"},
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            timeout=TIMEOUT_UPLOAD,
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"File upload failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    return {
+        "file_id": result.get("id", ""),
+        "filename": result.get("filename", filename),
+    }
+
+# ---------------------------------------------------------------------------
+# Image and vision helpers (unchanged endpoints)
+# ---------------------------------------------------------------------------
+
+def get_mime_type(file_path: str) -> str:
+    """Detect MIME type from file extension"""
+    ext = Path(file_path).suffix.lower()
+    mime_map = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".gif": "image/gif",
+        ".webp": "image/webp", ".bmp": "image/bmp",
+    }
+    return mime_map.get(ext, "image/jpeg")
+
+def get_auto_save_path(index: int = 0) -> str:
+    """Generate an auto-save path with timestamp"""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = f"_{index}" if index > 0 else ""
+    return os.path.join(OUTPUT_DIR, f"grok_{timestamp}{suffix}.jpg")
+
+def save_image(b64_data: str, save_path: str) -> str:
+    """Decode base64 image data and save to disk. Returns the absolute path."""
+    abs_path = os.path.abspath(save_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    with open(abs_path, "wb") as f:
+        f.write(base64.b64decode(b64_data))
+    return abs_path
+
+def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = None) -> List[Dict[str, str]]:
+    """Call xAI image generation API (Aurora). Returns list of {b64_json, revised_prompt}."""
+    payload: Dict[str, Any] = {
+        "model": "grok-2-image",
+        "prompt": prompt,
+        "n": n,
+        "response_format": "b64_json",
+    }
+    if aspect_ratio:
+        payload["aspect_ratio"] = aspect_ratio
+
+    response = requests.post(
+        XAI_IMAGE_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=TIMEOUT_IMAGE,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Image generation failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    images = []
+    for item in result.get("data", []):
+        b64 = item.get("b64_json", "")
+        if not b64:
+            raise RuntimeError("Image generation returned empty image data — the response may contain a URL instead of base64.")
+        images.append({
+            "b64_json": b64,
+            "revised_prompt": item.get("revised_prompt", prompt),
+        })
+    if not images:
+        raise RuntimeError("Image generation returned no images.")
+    return images
+
+def call_grok_vision(image_base64: str, mime_type: str, prompt: str) -> str:
+    """Call Grok vision model to analyze an image. Returns text response."""
+    data_url = f"data:{mime_type};base64,{image_base64}"
+    payload = {
+        "model": "grok-2-vision-1212",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+        "stream": False,
+        "temperature": 0.7,
+    }
+
+    response = requests.post(
+        XAI_CHAT_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=TIMEOUT_DEFAULT,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Vision analysis failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    if "choices" in result and len(result["choices"]) > 0:
+        return result["choices"][0]["message"]["content"]
+    return f"Unexpected response format: {result}"
+
+# ---------------------------------------------------------------------------
+# MCP protocol handlers
+# ---------------------------------------------------------------------------
+
 def handle_initialize(request_id: Any) -> Dict[str, Any]:
     """Handle initialization"""
     logger.info("Handling initialize request")
@@ -232,6 +499,16 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                             "type": "string",
                             "description": "The question or prompt for Grok",
                             "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "search": {
+                            "type": "boolean",
+                            "description": "Enable web search for real-time information (default: false)",
+                            "default": False
+                        },
+                        "file_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "File IDs from previous upload_file calls to include as context"
                         }
                     },
                     "required": ["prompt"]
@@ -276,6 +553,102 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         }
                     },
                     "required": ["topic"]
+                }
+            },
+            {
+                "name": "search_web",
+                "description": "Search the web using Grok with real-time results and citations. Grok autonomously searches, browses pages, and synthesizes answers. Trigger: 'grok search', 'grok web search', or 'search with grok'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query or question to research on the web",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "allowed_domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Only search within these domains (max 5). Cannot be combined with excluded_domains.",
+                            "maxItems": 5
+                        },
+                        "excluded_domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude these domains from search (max 5). Cannot be combined with allowed_domains.",
+                            "maxItems": 5
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "search_x",
+                "description": "Search X (Twitter) posts using Grok. Find tweets, threads, and discussions from specific users or timeframes. Trigger: 'grok search x', 'grok twitter search', or 'search x with grok'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query or question about X/Twitter content",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "allowed_x_handles": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Only search posts from these X handles (max 10, without @ prefix)",
+                            "maxItems": 10
+                        },
+                        "excluded_x_handles": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Exclude posts from these X handles (max 10)",
+                            "maxItems": 10
+                        },
+                        "from_date": {
+                            "type": "string",
+                            "description": "Start date for search range (YYYY-MM-DD format)"
+                        },
+                        "to_date": {
+                            "type": "string",
+                            "description": "End date for search range (YYYY-MM-DD format)"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "run_code",
+                "description": "Execute Python code in Grok's sandboxed environment with NumPy, Pandas, Matplotlib, SciPy. Useful for calculations, data analysis, and generating visualizations. Trigger: 'grok run code', 'grok execute', or 'grok calculate'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Description of what to compute or analyze. Grok will write and execute Python code automatically.",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            },
+            {
+                "name": "upload_file",
+                "description": "Upload a document for Grok to analyze. Supports: txt, md, py, js, csv, json, pdf, and more (max 48MB). Optionally ask a question about it immediately. Trigger: 'grok upload file', 'upload to grok'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Absolute path to the file to upload"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional question to ask about the file immediately after upload",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        }
+                    },
+                    "required": ["file_path"]
                 }
             },
             {
@@ -350,156 +723,6 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
         }
     }
 
-def call_grok(prompt: str, system_prompt: Optional[str] = None) -> str:
-    """Call Grok API directly via HTTP and return response"""
-    try:
-        # Build messages array
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        # Build request payload
-        payload = {
-            "model": DEFAULT_MODEL,
-            "messages": messages,
-            "stream": False,
-            "temperature": 0.7
-        }
-
-        # Make request using requests library
-        response = requests.post(
-            XAI_API_URL,
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {API_KEY}"
-            },
-            timeout=120
-        )
-
-        # Check for errors
-        if response.status_code != 200:
-            logger.error(f"HTTP error calling Grok: {response.status_code} - {response.text}")
-            return f"Error calling Grok (HTTP {response.status_code}): {response.text}"
-
-        result = response.json()
-
-        # Extract response content
-        if "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"]["content"]
-        else:
-            return f"Unexpected response format: {result}"
-
-    except requests.exceptions.Timeout:
-        logger.error("Timeout calling Grok")
-        return "Error calling Grok: Request timed out"
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error calling Grok: {e}")
-        return f"Error calling Grok: {str(e)}"
-    except Exception as e:
-        logger.error(f"Error calling Grok: {e}")
-        return f"Error calling Grok: {str(e)}"
-
-def get_mime_type(file_path: str) -> str:
-    """Detect MIME type from file extension"""
-    ext = Path(file_path).suffix.lower()
-    mime_map = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png", ".gif": "image/gif",
-        ".webp": "image/webp", ".bmp": "image/bmp",
-    }
-    return mime_map.get(ext, "image/jpeg")
-
-def get_auto_save_path(index: int = 0) -> str:
-    """Generate an auto-save path with timestamp"""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = f"_{index}" if index > 0 else ""
-    return os.path.join(OUTPUT_DIR, f"grok_{timestamp}{suffix}.jpg")
-
-def save_image(b64_data: str, save_path: str) -> str:
-    """Decode base64 image data and save to disk. Returns the absolute path."""
-    abs_path = os.path.abspath(save_path)
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    with open(abs_path, "wb") as f:
-        f.write(base64.b64decode(b64_data))
-    return abs_path
-
-def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = None) -> List[Dict[str, str]]:
-    """Call xAI image generation API (Aurora). Returns list of {b64_json, revised_prompt}."""
-    payload: Dict[str, Any] = {
-        "model": "grok-2-image",
-        "prompt": prompt,
-        "n": n,
-        "response_format": "b64_json",
-    }
-    if aspect_ratio:
-        payload["aspect_ratio"] = aspect_ratio
-
-    response = requests.post(
-        XAI_IMAGE_API_URL,
-        json=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}",
-        },
-        timeout=120,
-    )
-
-    if response.status_code != 200:
-        raise RuntimeError(f"Image generation failed (HTTP {response.status_code}): {response.text}")
-
-    result = response.json()
-    images = []
-    for item in result.get("data", []):
-        b64 = item.get("b64_json", "")
-        if not b64:
-            raise RuntimeError("Image generation returned empty image data — the response may contain a URL instead of base64.")
-        images.append({
-            "b64_json": b64,
-            "revised_prompt": item.get("revised_prompt", prompt),
-        })
-    if not images:
-        raise RuntimeError("Image generation returned no images.")
-    return images
-
-def call_grok_vision(image_base64: str, mime_type: str, prompt: str) -> str:
-    """Call Grok vision model to analyze an image. Returns text response."""
-    data_url = f"data:{mime_type};base64,{image_base64}"
-    payload = {
-        "model": "grok-2-vision-1212",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-        "stream": False,
-        "temperature": 0.7,
-    }
-
-    response = requests.post(
-        XAI_API_URL,
-        json=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}",
-        },
-        timeout=120,
-    )
-
-    if response.status_code != 200:
-        raise RuntimeError(f"Vision analysis failed (HTTP {response.status_code}): {response.text}")
-
-    result = response.json()
-    if "choices" in result and len(result["choices"]) > 0:
-        return result["choices"][0]["message"]["content"]
-    return f"Unexpected response format: {result}"
-
 def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     """Handle tool execution"""
     tool_name = params.get("name")
@@ -524,7 +747,22 @@ def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
                 if not prompt.strip():
                     raise ValueError("prompt cannot be empty")
-                result = call_grok(prompt)
+
+                tools = []
+                if arguments.get("search"):
+                    tools.append(build_tool_spec("web_search"))
+                file_ids = arguments.get("file_ids")
+
+                resp = call_grok_responses(
+                    prompt,
+                    tools=tools or None,
+                    file_ids=file_ids,
+                    timeout=TIMEOUT_TOOLS if tools else TIMEOUT_DEFAULT,
+                )
+                result = resp["text"]
+                cites = format_citations(resp.get("citations", []))
+                if cites:
+                    result += cites
 
         elif tool_name == "code_review":
             if not GROK_AVAILABLE:
@@ -550,7 +788,8 @@ Provide specific, actionable feedback on:
 3. Performance optimizations
 4. Best practices
 5. Code clarity and maintainability"""
-                result = call_grok(prompt, "You are an expert code reviewer.")
+                resp = call_grok_responses(prompt, system_prompt="You are an expert code reviewer.")
+                result = resp["text"]
 
         elif tool_name == "brainstorm":
             if not GROK_AVAILABLE:
@@ -567,7 +806,99 @@ Provide specific, actionable feedback on:
                 if context:
                     prompt += f"\n\nContext: {context}"
                 prompt += "\n\nProvide creative ideas, alternatives, and considerations."
-                result = call_grok(prompt, "You are a creative problem solver and brainstorming partner.")
+                resp = call_grok_responses(prompt, system_prompt="You are a creative problem solver and brainstorming partner.")
+                result = resp["text"]
+
+        elif tool_name == "search_web":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                query = arguments.get("query", "")
+                query = truncate_input(query, MAX_PROMPT_LENGTH, "query")
+                if not query.strip():
+                    raise ValueError("query cannot be empty")
+
+                allowed = arguments.get("allowed_domains")
+                excluded = arguments.get("excluded_domains")
+                if allowed and excluded:
+                    raise ValueError("Cannot use both allowed_domains and excluded_domains")
+
+                tool_kwargs = {}
+                if allowed:
+                    tool_kwargs["allowed_domains"] = allowed[:5]
+                if excluded:
+                    tool_kwargs["excluded_domains"] = excluded[:5]
+
+                tools = [build_tool_spec("web_search", **tool_kwargs)]
+                resp = call_grok_responses(query, tools=tools, timeout=TIMEOUT_TOOLS)
+                result = resp["text"]
+                cites = format_citations(resp.get("citations", []))
+                if cites:
+                    result += cites
+
+        elif tool_name == "search_x":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                query = arguments.get("query", "")
+                query = truncate_input(query, MAX_PROMPT_LENGTH, "query")
+                if not query.strip():
+                    raise ValueError("query cannot be empty")
+
+                allowed_handles = arguments.get("allowed_x_handles")
+                excluded_handles = arguments.get("excluded_x_handles")
+                if allowed_handles and excluded_handles:
+                    raise ValueError("Cannot use both allowed_x_handles and excluded_x_handles")
+
+                tool_kwargs = {}
+                if allowed_handles:
+                    tool_kwargs["allowed_x_handles"] = allowed_handles[:10]
+                if excluded_handles:
+                    tool_kwargs["excluded_x_handles"] = excluded_handles[:10]
+                if arguments.get("from_date"):
+                    tool_kwargs["from_date"] = arguments["from_date"]
+                if arguments.get("to_date"):
+                    tool_kwargs["to_date"] = arguments["to_date"]
+
+                tools = [build_tool_spec("x_search", **tool_kwargs)]
+                resp = call_grok_responses(query, tools=tools, timeout=TIMEOUT_TOOLS)
+                result = resp["text"]
+                cites = format_citations(resp.get("citations", []))
+                if cites:
+                    result += cites
+
+        elif tool_name == "run_code":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                prompt = arguments.get("prompt", "")
+                prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
+                if not prompt.strip():
+                    raise ValueError("prompt cannot be empty")
+
+                tools = [build_tool_spec("code_interpreter")]
+                resp = call_grok_responses(prompt, tools=tools, timeout=TIMEOUT_TOOLS)
+                result = resp["text"]
+
+        elif tool_name == "upload_file":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                file_path = arguments.get("file_path", "")
+                if not file_path.strip():
+                    raise ValueError("file_path cannot be empty")
+
+                upload_result = upload_file_to_xai(file_path)
+                file_id = upload_result["file_id"]
+                filename = upload_result["filename"]
+
+                query = arguments.get("query", "")
+                if query.strip():
+                    query = truncate_input(query, MAX_PROMPT_LENGTH, "query")
+                    resp = call_grok_responses(query, file_ids=[file_id])
+                    result = f"File '{filename}' uploaded (ID: {file_id}).\n\n{resp['text']}"
+                else:
+                    result = f"File '{filename}' uploaded successfully.\nFile ID: {file_id}\n\nUse this file_id with the 'ask' tool's file_ids parameter to ask questions about it."
 
         elif tool_name == "generate_image":
             if not GROK_AVAILABLE:
@@ -596,7 +927,6 @@ Provide specific, actionable feedback on:
 
                     abs_path = save_image(img["b64_json"], path)
 
-                    # Return inline image + text summary
                     content_blocks.append({
                         "type": "text",
                         "text": f"Image {i + 1} saved to: {abs_path}\nRevised prompt: {img['revised_prompt']}",
@@ -653,12 +983,16 @@ Provide specific, actionable feedback on:
             }
         }
 
+# ---------------------------------------------------------------------------
+# Main server loop
+# ---------------------------------------------------------------------------
+
 def main():
     """Main server loop"""
     global shutdown_requested
 
     logger.info(f"Starting Grok MCP server v{__version__}")
-    logger.info(f"Using direct HTTP API (no SDK)")
+    logger.info(f"Using Responses API + direct HTTP (no SDK)")
     logger.info(f"Model: {DEFAULT_MODEL}")
     logger.info(f"Grok available: {GROK_AVAILABLE}")
     if not GROK_AVAILABLE:
@@ -701,14 +1035,12 @@ def main():
             elif method == "tools/call":
                 response = handle_tool_call(request_id, params)
             elif method == "resources/list":
-                # Return empty resources list
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {"resources": []}
                 }
             elif method == "prompts/list":
-                # Return empty prompts list
                 response = {
                     "jsonrpc": "2.0",
                     "id": request_id,

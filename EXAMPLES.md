@@ -9,6 +9,10 @@ Use these phrases to invoke Grok:
 | `use grok`, `ask grok`, `grok:` | Ask | "use grok: what is quantum computing?" |
 | `grok review`, `have grok review` | Code Review | "grok review this function for security" |
 | `grok brainstorm`, `grok ideas` | Brainstorm | "grok brainstorm ideas for authentication" |
+| `grok search`, `grok web search` | Web Search | "grok search for latest React 19 features" |
+| `grok search x`, `grok twitter search` | X Search | "grok search x for posts about Claude Code" |
+| `grok run code`, `grok calculate` | Run Code | "grok calculate the first 50 prime numbers" |
+| `grok upload file` | Upload File | "grok upload file at ./report.pdf" |
 | `grok generate image`, `grok image` | Generate Image | "grok image of a cyberpunk cityscape" |
 | `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
 
@@ -49,6 +53,71 @@ def authenticate(username, password):
 > grok ideas for B2B SaaS that solves developer pain points
 
 # Grok provides creative suggestions
+```
+
+## Web Search
+
+```
+# Search for current information
+> grok search for the latest developments in quantum computing
+
+# Search within specific domains
+> grok web search for Python 3.13 features on docs.python.org
+
+# Research a topic with real-time data
+> grok search what happened in tech news today
+
+# Results include source citations with URLs
+```
+
+## X / Twitter Search
+
+```
+# Search for posts about a topic
+> grok search x for discussions about Claude Code
+
+# Search specific users' posts
+> grok search x for posts from @elikitten about AI safety
+
+# Search within a date range
+> grok search x for posts about GPT-5 from 2026-01-01 to 2026-02-01
+
+# Combine filters
+> grok search x for AI announcements from @OpenAI and @AnthropicAI
+```
+
+## Code Execution
+
+```
+# Run calculations
+> grok calculate the standard deviation of [23, 45, 67, 89, 12, 34]
+
+# Data analysis
+> grok run code to analyze this CSV data and find trends
+
+# Mathematical proofs
+> grok execute: verify that the sum of first n odd numbers equals n²
+
+# Generate visualizations
+> grok run code to create a bar chart comparing Python vs JavaScript popularity
+```
+
+## File Upload & Analysis
+
+```
+# Upload and immediately ask about a file
+> grok upload file at ./quarterly-report.pdf and summarize the key findings
+
+# Upload a file for later questions
+> grok upload file at ./codebase-architecture.md
+# Returns a file ID, then use it:
+> ask grok about the authentication flow (with the uploaded file)
+
+# Analyze code files
+> grok upload file at ./server.py and review it for security issues
+
+# Process data files
+> grok upload file at ./sales-data.csv and identify the top-performing regions
 ```
 
 ## Image Generation
@@ -93,6 +162,22 @@ def authenticate(username, password):
 # Claude can then incorporate Grok's feedback!
 ```
 
+## Advanced: Research Workflow
+
+```
+# Step 1: Search the web for current information
+> grok search for the latest best practices in microservices architecture 2026
+
+# Step 2: Search X for community opinions
+> grok search x for discussions about microservices vs monolith
+
+# Step 3: Upload your existing architecture doc
+> grok upload file at ./architecture.md and suggest improvements based on current best practices
+
+# Step 4: Have Grok run calculations
+> grok run code to estimate the cost savings of migrating to microservices
+```
+
 ## Advanced: Image Workflow
 
 ```
@@ -110,11 +195,14 @@ def authenticate(username, password):
 ## Real-World Workflow
 
 1. **Claude writes initial code**
-2. **Grok reviews for security/performance**
-3. **Claude implements improvements**
-4. **Both AIs brainstorm edge cases**
-5. **Grok generates visual assets if needed**
-6. **Final optimized solution!**
+2. **Grok searches the web** for current best practices
+3. **Grok reviews** the code for security/performance
+4. **Claude implements improvements**
+5. **Grok runs code** to verify calculations or benchmark
+6. **Both AIs brainstorm edge cases**
+7. **Grok searches X** for community feedback on the approach
+8. **Grok generates visual assets** if needed
+9. **Final optimized solution!**
 
 This creates a powerful AI pair programming experience where both models complement each other's strengths.
 
@@ -126,6 +214,10 @@ Grok models offer massive context windows (up to 2M tokens with `grok-4-1-fast-r
 - Understanding complex system architectures
 - Processing extensive documentation
 - Analyzing lengthy log files
+- **Searching the web** for real-time information with citations
+- **Searching X/Twitter** for community discussions and trends
+- **Executing Python code** for calculations and data analysis
+- **Analyzing uploaded files** (PDFs, code, CSVs, etc.)
 - Generating images with Aurora
 - Analyzing images and screenshots with vision
 
@@ -151,6 +243,7 @@ Restart Claude Code after changing the model.
 | Model ID | Context | Description |
 |----------|---------|-------------|
 | `grok-4-1-fast-reasoning` | 2M | Grok 4.1 Fast with reasoning (Default) |
+| `grok-4` | 256K | Grok 4 flagship model |
 | `grok-4-1-fast-non-reasoning` | 2M | Grok 4.1 Fast without reasoning |
 | `grok-4-fast-reasoning` | — | Grok 4 Fast with reasoning |
 | `grok-4-fast-non-reasoning` | — | Grok 4 Fast without reasoning |
