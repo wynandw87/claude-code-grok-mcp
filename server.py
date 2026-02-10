@@ -429,10 +429,10 @@ def save_image(b64_data: str, save_path: str) -> str:
 def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = None) -> List[Dict[str, str]]:
     """Call xAI image generation API (Aurora). Returns list of {b64_json, revised_prompt}."""
     payload: Dict[str, Any] = {
-        "model": "grok-imagine-image",
+        "model": "grok-2-image",
         "prompt": prompt,
         "n": n,
-        "image_format": "b64_json",
+        "response_format": "b64_json",
     }
     if aspect_ratio:
         payload["aspect_ratio"] = aspect_ratio
@@ -455,13 +455,13 @@ def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = N
     for item in result.get("data", []):
         b64 = item.get("b64_json", "")
         if not b64:
-            raise RuntimeError("Image generation returned empty image data. The API may be rate-limited — try again shortly.")
+            raise RuntimeError("Image generation returned empty image data — the response may contain a URL instead of base64.")
         images.append({
             "b64_json": b64,
             "revised_prompt": item.get("revised_prompt", prompt),
         })
     if not images:
-        raise RuntimeError("Image generation returned no images. The API may be rate-limited — try again shortly.")
+        raise RuntimeError("Image generation returned no images.")
     return images
 
 def call_grok_vision(image_base64: str, mime_type: str, prompt: str) -> str:

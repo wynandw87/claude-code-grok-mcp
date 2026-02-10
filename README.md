@@ -114,7 +114,7 @@ Or ask naturally:
 
 ## Image Generation
 
-Generate images using Grok's Aurora model (`grok-imagine-image`).
+Generate images using Grok's Aurora model (`grok-2-image`).
 
 **Parameters:**
 - `prompt` (required) — description of the image to create
@@ -267,7 +267,7 @@ This MCP server uses the xAI REST API directly (OpenAI-compatible format) to com
 | `ask` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
 | `code_review` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
 | `brainstorm` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `generate_image` | Image Generations | `grok-imagine-image` (Aurora) |
+| `generate_image` | Image Generations | `grok-2-image` (Aurora) |
 | `analyze_image` | Chat Completions | `grok-2-vision-1212` |
 
 ---

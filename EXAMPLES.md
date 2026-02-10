@@ -64,7 +64,6 @@ def authenticate(username, password):
 > grok generate 4 images of a logo concept for a tech startup
 
 # Images are saved automatically to ./generated-images/
-# and returned inline to Claude
 ```
 
 ## Image Analysis (Vision)
@@ -161,4 +160,4 @@ Restart Claude Code after changing the model.
 | `grok-2-1212` | 128K | Grok 2 |
 | `grok-2-vision-1212` | 32K | Grok 2 Vision (used by `analyze_image`) |
 | `grok-code-fast-1` | — | Grok Code Fast - Optimized for coding |
-| `grok-imagine-image` | — | Aurora image generation (used by `generate_image`) |
+| `grok-2-image` | — | Aurora image generation (used by `generate_image`) |
