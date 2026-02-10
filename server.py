@@ -453,10 +453,15 @@ def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = N
     result = response.json()
     images = []
     for item in result.get("data", []):
+        b64 = item.get("b64_json", "")
+        if not b64:
+            raise RuntimeError("Image generation returned empty image data. The API may be rate-limited — try again shortly.")
         images.append({
-            "b64_json": item.get("b64_json", ""),
+            "b64_json": b64,
             "revised_prompt": item.get("revised_prompt", prompt),
         })
+    if not images:
+        raise RuntimeError("Image generation returned no images. The API may be rate-limited — try again shortly.")
     return images
 
 def call_grok_vision(image_base64: str, mime_type: str, prompt: str) -> str:
