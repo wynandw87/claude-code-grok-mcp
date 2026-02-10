@@ -49,6 +49,10 @@ Choose your install scope:
 
 Replace `YOUR_API_KEY` with your actual xAI API key, and use the full path to `server.py`.
 
+> **Tip:** To get the full path, run this from the cloned directory:
+> - macOS/Linux: `echo "$(pwd)/server.py"`
+> - Windows: `echo %cd%\server.py`
+
 **macOS / Linux:**
 ```text
 claude mcp add -s user -t stdio Grok python3 /full/path/to/server.py -e XAI_API_KEY=YOUR_API_KEY

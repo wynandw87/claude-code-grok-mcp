@@ -69,10 +69,16 @@ Write-Host ""
 Write-Host "IMPORTANT: Restart Claude Code for changes to take effect." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Available tools:" -ForegroundColor White
-Write-Host "  - Grok - ask" -ForegroundColor Gray
-Write-Host "  - Grok - code_review" -ForegroundColor Gray
-Write-Host "  - Grok - brainstorm" -ForegroundColor Gray
+Write-Host "  - ask              - General questions" -ForegroundColor Gray
+Write-Host "  - code_review      - Code analysis" -ForegroundColor Gray
+Write-Host "  - brainstorm       - Creative ideation" -ForegroundColor Gray
+Write-Host "  - search_web       - Web search with citations" -ForegroundColor Gray
+Write-Host "  - search_x         - X/Twitter search" -ForegroundColor Gray
+Write-Host "  - run_code         - Python code execution" -ForegroundColor Gray
+Write-Host "  - upload_file      - File analysis" -ForegroundColor Gray
+Write-Host "  - generate_image   - Image generation" -ForegroundColor Gray
+Write-Host "  - analyze_image    - Image analysis (vision)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "To change the default model, run:" -ForegroundColor Gray
 Write-Host "  python $serverPath config --list-models" -ForegroundColor Gray
-Write-Host "  python $serverPath config --model grok-4" -ForegroundColor Gray
+Write-Host "  python $serverPath config --model grok-4-0709" -ForegroundColor Gray

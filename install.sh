@@ -36,7 +36,7 @@ git clone --quiet https://github.com/wynandw87/claude-code-grok-mcp.git "$INSTAL
 echo ""
 echo -e "${YELLOW}Please enter your xAI API key:${NC}"
 echo "   (Get one at https://console.x.ai/)"
-read -p "API Key: " API_KEY
+read -p "API Key: " API_KEY < /dev/tty
 
 if [ -z "$API_KEY" ]; then
     echo -e "${RED}API key is required${NC}"
@@ -53,4 +53,4 @@ echo -e "${GREEN}Installation complete!${NC}"
 echo ""
 echo -e "${YELLOW}To change the default model later, run:${NC}"
 echo -e "  python3 $INSTALL_DIR/server.py config --list-models"
-echo -e "  python3 $INSTALL_DIR/server.py config --model grok-4"
+echo -e "  python3 $INSTALL_DIR/server.py config --model grok-4-0709"
