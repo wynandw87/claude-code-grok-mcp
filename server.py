@@ -593,11 +593,6 @@ Provide specific, actionable feedback on:
 
                     # Return inline image + text summary
                     content_blocks.append({
-                        "type": "image",
-                        "data": img["b64_json"],
-                        "mimeType": "image/jpeg",
-                    })
-                    content_blocks.append({
                         "type": "text",
                         "text": f"Image {i + 1} saved to: {abs_path}\nRevised prompt: {img['revised_prompt']}",
                     })
