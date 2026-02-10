@@ -1,6 +1,6 @@
 # Claude Code + Grok MCP Server
 
-Connect Claude Code with xAI's Grok AI for powerful AI collaboration. Ask Grok questions, get code reviews, and brainstorm ideas - all within Claude Code!
+Connect Claude Code with xAI's Grok AI for powerful AI collaboration. Ask Grok questions, get code reviews, brainstorm ideas, generate images, and analyze images with vision - all within Claude Code!
 
 ## Quick Start
 
@@ -99,12 +99,47 @@ Once installed, use trigger phrases to invoke Grok:
 | `use grok`, `ask grok`, `grok:` | Ask | "use grok: what is quantum computing?" |
 | `grok review`, `have grok review` | Code Review | "grok review this function for security" |
 | `grok brainstorm`, `grok ideas` | Brainstorm | "grok brainstorm ideas for authentication" |
+| `grok generate image`, `grok image` | Generate Image | "grok generate image of a sunset over mountains" |
+| `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
 
 Or ask naturally:
 
 - *"Ask Grok what it thinks about this approach"*
 - *"Have Grok review this code for security issues"*
 - *"Brainstorm with Grok about scaling strategies"*
+- *"Grok generate an image of a futuristic city"*
+- *"Grok describe what's in this screenshot"*
+
+---
+
+## Image Generation
+
+Generate images using Grok's Aurora model (`grok-imagine-image`).
+
+**Parameters:**
+- `prompt` (required) — description of the image to create
+- `n` (optional, 1-10) — number of images to generate
+- `aspect_ratio` (optional) — `"1:1"`, `"16:9"`, `"9:16"`, `"4:3"`, `"3:4"`
+- `save_path` (optional) — where to save the file; auto-saves with timestamp if omitted
+
+Images are returned inline to Claude and saved to disk. The default save directory is `./generated-images/`, configurable via the `GROK_OUTPUT_DIR` environment variable.
+
+## Image Analysis (Vision)
+
+Analyze images using Grok's vision model (`grok-2-vision-1212`).
+
+**Parameters:**
+- `image_path` (required) — absolute path to the image file
+- `prompt` (optional) — question about the image (default: "Describe this image in detail")
+
+---
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `XAI_API_KEY` | Your xAI API key (required) | — |
+| `GROK_OUTPUT_DIR` | Directory for auto-saved generated images | `./generated-images` |
 
 ---
 
@@ -225,6 +260,15 @@ python server.py config --show
 ## How It Works
 
 This MCP server uses the xAI REST API directly (OpenAI-compatible format) to communicate with Grok models. No SDK required - just the `requests` library for HTTP calls.
+
+**Tools provided:**
+| Tool | API | Model |
+|------|-----|-------|
+| `ask` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `code_review` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `brainstorm` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `generate_image` | Image Generations | `grok-imagine-image` (Aurora) |
+| `analyze_image` | Chat Completions | `grok-2-vision-1212` |
 
 ---
 

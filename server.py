@@ -11,20 +11,26 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import sys
 import os
 import signal
 import logging
 import requests
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 # Server version
-__version__ = "1.3.0"
+__version__ = "2.0.0"
 
-# xAI API endpoint
+# xAI API endpoints
 XAI_API_URL = "https://api.x.ai/v1/chat/completions"
+XAI_IMAGE_API_URL = "https://api.x.ai/v1/images/generations"
+
+# Default output directory for generated images
+OUTPUT_DIR = os.environ.get("GROK_OUTPUT_DIR", "./generated-images")
 
 # Available Grok models (from xAI API)
 AVAILABLE_MODELS = {
@@ -271,6 +277,57 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     },
                     "required": ["topic"]
                 }
+            },
+            {
+                "name": "generate_image",
+                "description": "Generate images using Grok's Aurora image model. Returns the image inline and saves to disk. Trigger: 'grok generate image', 'grok image', or 'grok create image'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Image generation prompt describing what to create",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "n": {
+                            "type": "integer",
+                            "description": "Number of images to generate (1-10)",
+                            "default": 1,
+                            "minimum": 1,
+                            "maximum": 10
+                        },
+                        "aspect_ratio": {
+                            "type": "string",
+                            "description": "Aspect ratio: '1:1', '16:9', '9:16', '4:3', '3:4'",
+                            "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"]
+                        },
+                        "save_path": {
+                            "type": "string",
+                            "description": "File path to save the image. If not provided, auto-saves to output directory."
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            },
+            {
+                "name": "analyze_image",
+                "description": "Analyze an image using Grok's vision model. Provide a file path and optional prompt. Trigger: 'grok analyze image', 'grok describe image', or 'grok vision'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "image_path": {
+                            "type": "string",
+                            "description": "Absolute path to the image file to analyze"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "Question or instruction about the image",
+                            "default": "Describe this image in detail",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        }
+                    },
+                    "required": ["image_path"]
+                }
             }
         ]
     else:
@@ -344,6 +401,100 @@ def call_grok(prompt: str, system_prompt: Optional[str] = None) -> str:
         logger.error(f"Error calling Grok: {e}")
         return f"Error calling Grok: {str(e)}"
 
+def get_mime_type(file_path: str) -> str:
+    """Detect MIME type from file extension"""
+    ext = Path(file_path).suffix.lower()
+    mime_map = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".gif": "image/gif",
+        ".webp": "image/webp", ".bmp": "image/bmp",
+    }
+    return mime_map.get(ext, "image/jpeg")
+
+def get_auto_save_path(index: int = 0) -> str:
+    """Generate an auto-save path with timestamp"""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = f"_{index}" if index > 0 else ""
+    return os.path.join(OUTPUT_DIR, f"grok_{timestamp}{suffix}.jpg")
+
+def save_image(b64_data: str, save_path: str) -> str:
+    """Decode base64 image data and save to disk. Returns the absolute path."""
+    abs_path = os.path.abspath(save_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    with open(abs_path, "wb") as f:
+        f.write(base64.b64decode(b64_data))
+    return abs_path
+
+def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = None) -> List[Dict[str, str]]:
+    """Call xAI image generation API (Aurora). Returns list of {b64_json, revised_prompt}."""
+    payload: Dict[str, Any] = {
+        "model": "grok-imagine-image",
+        "prompt": prompt,
+        "n": n,
+        "image_format": "b64_json",
+    }
+    if aspect_ratio:
+        payload["aspect_ratio"] = aspect_ratio
+
+    response = requests.post(
+        XAI_IMAGE_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=120,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Image generation failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    images = []
+    for item in result.get("data", []):
+        images.append({
+            "b64_json": item.get("b64_json", ""),
+            "revised_prompt": item.get("revised_prompt", prompt),
+        })
+    return images
+
+def call_grok_vision(image_base64: str, mime_type: str, prompt: str) -> str:
+    """Call Grok vision model to analyze an image. Returns text response."""
+    data_url = f"data:{mime_type};base64,{image_base64}"
+    payload = {
+        "model": "grok-2-vision-1212",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+        "stream": False,
+        "temperature": 0.7,
+    }
+
+    response = requests.post(
+        XAI_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=120,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Vision analysis failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    if "choices" in result and len(result["choices"]) > 0:
+        return result["choices"][0]["message"]["content"]
+    return f"Unexpected response format: {result}"
+
 def handle_tool_call(request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     """Handle tool execution"""
     tool_name = params.get("name")
@@ -412,6 +563,69 @@ Provide specific, actionable feedback on:
                     prompt += f"\n\nContext: {context}"
                 prompt += "\n\nProvide creative ideas, alternatives, and considerations."
                 result = call_grok(prompt, "You are a creative problem solver and brainstorming partner.")
+
+        elif tool_name == "generate_image":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                prompt = arguments.get("prompt", "")
+                prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
+                if not prompt.strip():
+                    raise ValueError("prompt cannot be empty")
+                n = min(max(int(arguments.get("n", 1)), 1), 10)
+                aspect_ratio = arguments.get("aspect_ratio")
+                save_path = arguments.get("save_path")
+
+                images = call_grok_image_gen(prompt, n, aspect_ratio)
+
+                content_blocks = []
+                for i, img in enumerate(images):
+                    # Determine save path
+                    if save_path and n == 1:
+                        path = save_path
+                    elif save_path and n > 1:
+                        base, ext = os.path.splitext(save_path)
+                        path = f"{base}_{i}{ext}"
+                    else:
+                        path = get_auto_save_path(i)
+
+                    abs_path = save_image(img["b64_json"], path)
+
+                    # Return inline image + text summary
+                    content_blocks.append({
+                        "type": "image",
+                        "data": img["b64_json"],
+                        "mimeType": "image/jpeg",
+                    })
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"Image {i + 1} saved to: {abs_path}\nRevised prompt: {img['revised_prompt']}",
+                    })
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"content": content_blocks},
+                }
+
+        elif tool_name == "analyze_image":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                image_path = arguments.get("image_path", "")
+                if not image_path.strip():
+                    raise ValueError("image_path cannot be empty")
+                if not os.path.isfile(image_path):
+                    raise ValueError(f"File not found: {image_path}")
+
+                prompt = arguments.get("prompt", "Describe this image in detail")
+                prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
+
+                with open(image_path, "rb") as f:
+                    image_base64 = base64.b64encode(f.read()).decode("utf-8")
+                mime_type = get_mime_type(image_path)
+
+                result = call_grok_vision(image_base64, mime_type, prompt)
 
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
