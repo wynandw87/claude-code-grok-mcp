@@ -122,7 +122,7 @@ Generate images using Grok's Aurora model (`grok-imagine-image`).
 - `aspect_ratio` (optional) — `"1:1"`, `"16:9"`, `"9:16"`, `"4:3"`, `"3:4"`
 - `save_path` (optional) — where to save the file; auto-saves with timestamp if omitted
 
-Images are returned inline to Claude and saved to disk. The default save directory is `./generated-images/`, configurable via the `GROK_OUTPUT_DIR` environment variable.
+Images are saved to disk. The default save directory is `./generated-images/`, configurable via the `GROK_OUTPUT_DIR` environment variable.
 
 ## Image Analysis (Vision)
 
