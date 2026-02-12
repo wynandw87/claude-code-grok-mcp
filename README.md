@@ -58,9 +58,14 @@ Replace `YOUR_API_KEY` with your actual xAI API key, and use the full path to `s
 claude mcp add -s user -t stdio Grok python3 /full/path/to/server.py -e XAI_API_KEY=YOUR_API_KEY
 ```
 
-**Windows:**
+**Windows (CMD):**
 ```text
-claude mcp add -s user -t stdio Grok python C:\full\path\to\server.py -e XAI_API_KEY=YOUR_API_KEY
+claude mcp add -s user -t stdio Grok python "C:\full\path\to\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
+```
+
+**Windows (PowerShell):**
+```text
+claude mcp add -s user -t stdio Grok python "C:\full\path\to\server.py" -e "XAI_API_KEY=YOUR_API_KEY"
 ```
 
 > **Note:** Windows uses `python` while macOS/Linux use `python3`. Use the full absolute path to where you cloned the repository.
