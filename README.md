@@ -1,6 +1,6 @@
 # Claude Code + Grok MCP Server
 
-MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, and vision analysis. Supports Grok 4.1, Aurora, and Vision models.
+MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, and vision analysis. Supports Grok 4.1, Aurora, Imagine, and Vision models.
 
 ## Quick Start
 
@@ -113,6 +113,8 @@ Once installed, use trigger phrases to invoke Grok:
 | `grok run code`, `grok calculate` | Run Code | "grok calculate the first 50 prime numbers" |
 | `grok upload file` | Upload File | "grok upload file at ./report.pdf" |
 | `grok generate image`, `grok image` | Generate Image | "grok generate image of a sunset over mountains" |
+| `grok edit image`, `grok modify image` | Edit Image | "grok edit image at ./photo.jpg to look like an oil painting" |
+| `grok generate video`, `grok video` | Generate Video | "grok generate a 5 second video of ocean waves" |
 | `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
 
 Or ask naturally:
@@ -125,6 +127,8 @@ Or ask naturally:
 - *"Grok run code to calculate compound interest over 10 years"*
 - *"Upload this CSV to Grok and ask it to summarize the data"*
 - *"Grok generate an image of a futuristic city"*
+- *"Grok edit this image to add a sunset background"*
+- *"Grok generate a 10 second video of a drone flying over a forest"*
 - *"Grok describe what's in this screenshot"*
 
 ---
@@ -174,23 +178,51 @@ Returns a file ID that can be reused with the `ask` tool's `file_ids` parameter 
 
 ## Image Generation
 
-Generate images using Grok's Aurora model (`grok-2-image`).
+Generate images using Grok's image models.
 
 **Parameters:**
 - `prompt` (required) — description of the image to create
+- `model` (optional) — `"grok-imagine-image"` (default, $0.02/img), `"grok-2-image-1212"` ($0.07/img), or `"grok-imagine-image-pro"` ($0.07/img, higher quality)
 - `n` (optional, 1-10) — number of images to generate
-- `aspect_ratio` (optional) — `"1:1"`, `"16:9"`, `"9:16"`, `"4:3"`, `"3:4"`
+- `aspect_ratio` (optional) — `"1:1"`, `"16:9"`, `"9:16"`, `"4:3"`, `"3:4"`, `"3:2"`, `"2:3"`, `"2:1"`, `"1:2"`, `"19.5:9"`, `"9:19.5"`, `"20:9"`, `"9:20"`, `"auto"`
+- `resolution` (optional) — `"1k"` (~1024px) or `"2k"` (~2048px)
 - `save_path` (optional) — where to save the file; auto-saves with timestamp if omitted
 
 Images are saved to disk. The default save directory is `./generated-images/`, configurable via the `GROK_OUTPUT_DIR` environment variable.
 
+## Image Editing
+
+Edit existing images using natural language with Grok's Imagine models. Supports style transfer, iterative refinement, and content modification.
+
+**Parameters:**
+- `prompt` (required) — description of the desired edits (e.g., "make it look like an oil painting", "add a sunset background")
+- `image_path` (required) — absolute path to the source image
+- `model` (optional) — `"grok-imagine-image"` (default, $0.02/img) or `"grok-imagine-image-pro"` ($0.07/img)
+- `save_path` (optional) — where to save the edited image; auto-saves if omitted
+
+## Video Generation
+
+Generate videos using Grok's Imagine video model. Supports three modes: text-to-video, image-to-video, and video editing. Video generation is async and may take 1-5 minutes.
+
+**Parameters:**
+- `prompt` (required) — description of the video to generate or editing instructions
+- `duration` (optional, 1-15) — video duration in seconds (default: 5). Not applicable for video editing.
+- `aspect_ratio` (optional) — `"1:1"`, `"16:9"` (default), `"9:16"`, `"4:3"`, `"3:4"`, `"3:2"`, `"2:3"`
+- `resolution` (optional) — `"480p"` (default) or `"720p"`
+- `image_path` (optional) — source image for image-to-video mode
+- `video_url` (optional) — source video URL for video editing mode (max 8.7s input)
+- `save_path` (optional) — where to save the video; auto-saves if omitted
+
+Videos are saved to disk. The default save directory is `./generated-videos/`, configurable via the `GROK_VIDEO_OUTPUT_DIR` environment variable. Pricing is $0.05 per second of generated video.
+
 ## Image Analysis (Vision)
 
-Analyze images using Grok's vision model (`grok-2-vision-1212`).
+Analyze images using Grok's vision capabilities. Uses your configured default model (grok-4+ models support vision natively).
 
 **Parameters:**
 - `image_path` (required) — absolute path to the image file
 - `prompt` (optional) — question about the image (default: "Describe this image in detail")
+- `model` (optional) — vision model override: `"grok-2-vision-1212"`, `"grok-4-1-fast-reasoning"`, `"grok-4"`, etc.
 
 ---
 
@@ -200,6 +232,7 @@ Analyze images using Grok's vision model (`grok-2-vision-1212`).
 |----------|-------------|---------|
 | `XAI_API_KEY` | Your xAI API key (required) | — |
 | `GROK_OUTPUT_DIR` | Directory for auto-saved generated images | `./generated-images` |
+| `GROK_VIDEO_OUTPUT_DIR` | Directory for auto-saved generated videos | `./generated-videos` |
 | `GROK_TIMEOUT` | Default timeout in seconds for API calls | `180` |
 
 ---
@@ -228,6 +261,8 @@ Available Grok models:
 --------------------------------------------------
   grok-4-1-fast-reasoning *
     Grok 4.1 Fast with reasoning (2M context) - Default
+  grok-4
+    Grok 4 flagship model
   grok-4-1-fast-non-reasoning
     Grok 4.1 Fast without reasoning (2M context)
   grok-4-fast-reasoning
@@ -246,6 +281,14 @@ Available Grok models:
     Grok 2 Vision (32K context)
   grok-code-fast-1
     Grok Code Fast - Optimized for coding
+  grok-2-image-1212
+    Aurora image generation (text→image, $0.07/img)
+  grok-imagine-image
+    Imagine image gen + editing (text,image→image, $0.02/img)
+  grok-imagine-image-pro
+    Imagine Pro image gen + editing (higher quality, $0.07/img)
+  grok-imagine-video
+    Imagine video generation (text,image,video→video, $0.05/sec)
 
 * = currently selected
 ```
@@ -332,8 +375,10 @@ This MCP server uses the xAI REST API directly to communicate with Grok models. 
 | `search_x` | Responses + x_search | Configurable (default: `grok-4-1-fast-reasoning`) |
 | `run_code` | Responses + code_interpreter | Configurable (default: `grok-4-1-fast-reasoning`) |
 | `upload_file` | Files + Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `generate_image` | Image Generations | `grok-2-image` (Aurora) |
-| `analyze_image` | Chat Completions | `grok-2-vision-1212` |
+| `generate_image` | Image Generations | Configurable (default: `grok-imagine-image`) |
+| `edit_image` | Image Edits | Configurable (default: `grok-imagine-image`) |
+| `generate_video` | Video Generations | `grok-imagine-video` |
+| `analyze_image` | Chat Completions | Configurable (default: your configured model) |
 
 ---
 

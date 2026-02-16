@@ -17,18 +17,21 @@ import sys
 import os
 import signal
 import logging
+import time
 import requests
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 # Server version
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 # xAI API endpoints
 XAI_CHAT_API_URL = "https://api.x.ai/v1/chat/completions"
 XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses"
 XAI_IMAGE_API_URL = "https://api.x.ai/v1/images/generations"
+XAI_IMAGE_EDIT_API_URL = "https://api.x.ai/v1/images/edits"
+XAI_VIDEO_API_URL = "https://api.x.ai/v1/videos/generations"
 XAI_FILES_API_URL = "https://api.x.ai/v1/files"
 
 # Timeouts (seconds)
@@ -36,9 +39,13 @@ TIMEOUT_DEFAULT = int(os.environ.get("GROK_TIMEOUT", "180"))
 TIMEOUT_TOOLS = 300   # web_search, x_search, code_interpreter
 TIMEOUT_UPLOAD = 120
 TIMEOUT_IMAGE = 120
+TIMEOUT_VIDEO = 300       # video generation submission
+VIDEO_POLL_INTERVAL = 5   # seconds between status checks
+VIDEO_POLL_TIMEOUT = 600  # max 10 minutes waiting for video
 
-# Default output directory for generated images
+# Default output directories for generated media
 OUTPUT_DIR = os.environ.get("GROK_OUTPUT_DIR", "./generated-images")
+VIDEO_OUTPUT_DIR = os.environ.get("GROK_VIDEO_OUTPUT_DIR", "./generated-videos")
 
 # File upload limits
 MAX_FILE_SIZE_MB = 48
@@ -62,6 +69,12 @@ AVAILABLE_MODELS = {
     "grok-2-1212": "Grok 2 (128K context)",
     "grok-2-vision-1212": "Grok 2 Vision (32K context)",
     "grok-code-fast-1": "Grok Code Fast - Optimized for coding",
+    # Image generation models
+    "grok-2-image-1212": "Aurora image generation (text→image, $0.07/img)",
+    "grok-imagine-image": "Imagine image gen + editing (text,image→image, $0.02/img)",
+    "grok-imagine-image-pro": "Imagine Pro image gen + editing (higher quality, $0.07/img)",
+    # Video generation model
+    "grok-imagine-video": "Imagine video generation (text,image,video→video, $0.05/sec)",
 }
 
 # Config file location
@@ -385,16 +398,24 @@ def save_image(b64_data: str, save_path: str) -> str:
         f.write(base64.b64decode(b64_data))
     return abs_path
 
-def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = None) -> List[Dict[str, str]]:
-    """Call xAI image generation API (Aurora). Returns list of {b64_json, revised_prompt}."""
+def call_grok_image_gen(
+    prompt: str,
+    n: int = 1,
+    aspect_ratio: Optional[str] = None,
+    model: str = "grok-imagine-image",
+    resolution: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Call xAI image generation API. Returns list of {b64_json, revised_prompt}."""
     payload: Dict[str, Any] = {
-        "model": "grok-2-image",
+        "model": model,
         "prompt": prompt,
         "n": n,
         "response_format": "b64_json",
     }
     if aspect_ratio:
         payload["aspect_ratio"] = aspect_ratio
+    if resolution:
+        payload["resolution"] = resolution
 
     response = requests.post(
         XAI_IMAGE_API_URL,
@@ -423,11 +444,53 @@ def call_grok_image_gen(prompt: str, n: int = 1, aspect_ratio: Optional[str] = N
         raise RuntimeError("Image generation returned no images.")
     return images
 
-def call_grok_vision(image_base64: str, mime_type: str, prompt: str) -> str:
+def call_grok_image_edit(
+    prompt: str,
+    image_base64: str,
+    mime_type: str,
+    model: str = "grok-imagine-image",
+) -> Dict[str, str]:
+    """Call xAI image edit API. Returns {b64_json, revised_prompt}."""
+    data_url = f"data:{mime_type};base64,{image_base64}"
+    payload: Dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "image": {"url": data_url},
+        "n": 1,
+        "response_format": "b64_json",
+    }
+
+    response = requests.post(
+        XAI_IMAGE_EDIT_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=TIMEOUT_IMAGE,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Image edit failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    data = result.get("data", [])
+    if not data:
+        raise RuntimeError("Image edit returned no images.")
+    b64 = data[0].get("b64_json", "")
+    if not b64:
+        raise RuntimeError("Image edit returned empty image data.")
+    return {
+        "b64_json": b64,
+        "revised_prompt": data[0].get("revised_prompt", prompt),
+    }
+
+def call_grok_vision(image_base64: str, mime_type: str, prompt: str, model: Optional[str] = None) -> str:
     """Call Grok vision model to analyze an image. Returns text response."""
+    vision_model = model or DEFAULT_MODEL
     data_url = f"data:{mime_type};base64,{image_base64}"
     payload = {
-        "model": "grok-2-vision-1212",
+        "model": vision_model,
         "messages": [
             {
                 "role": "user",
@@ -458,6 +521,111 @@ def call_grok_vision(image_base64: str, mime_type: str, prompt: str) -> str:
     if "choices" in result and len(result["choices"]) > 0:
         return result["choices"][0]["message"]["content"]
     return f"Unexpected response format: {result}"
+
+# ---------------------------------------------------------------------------
+# Video generation helpers
+# ---------------------------------------------------------------------------
+
+def get_video_save_path() -> str:
+    """Generate an auto-save path for video with timestamp."""
+    os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(VIDEO_OUTPUT_DIR, f"grok_{timestamp}.mp4")
+
+def call_grok_video_gen(
+    prompt: str,
+    duration: Optional[int] = None,
+    aspect_ratio: Optional[str] = None,
+    resolution: Optional[str] = None,
+    image_path: Optional[str] = None,
+    video_url: Optional[str] = None,
+) -> str:
+    """Submit a video generation request. Returns request_id for polling."""
+    payload: Dict[str, Any] = {
+        "model": "grok-imagine-video",
+        "prompt": prompt,
+    }
+    if duration is not None:
+        payload["duration"] = duration
+    if aspect_ratio:
+        payload["aspect_ratio"] = aspect_ratio
+    if resolution:
+        payload["resolution"] = resolution
+
+    # Image-to-video: read image and send as base64 data URI
+    if image_path:
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        mime = get_mime_type(image_path)
+        payload["image_url"] = f"data:{mime};base64,{img_b64}"
+
+    # Video editing: pass video URL directly
+    if video_url:
+        payload["video_url"] = video_url
+
+    response = requests.post(
+        XAI_VIDEO_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=TIMEOUT_VIDEO,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Video generation failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    request_id = result.get("request_id")
+    if not request_id:
+        raise RuntimeError(f"Video generation returned no request_id: {result}")
+    return request_id
+
+def poll_video_status(request_id: str) -> Dict[str, Any]:
+    """Poll for video completion. Returns video result when done."""
+    poll_url = f"https://api.x.ai/v1/videos/{request_id}"
+    start = time.time()
+
+    while time.time() - start < VIDEO_POLL_TIMEOUT:
+        response = requests.get(
+            poll_url,
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            timeout=60,
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(f"Video poll failed (HTTP {response.status_code}): {response.text}")
+
+        result = response.json()
+        status = result.get("status", "")
+
+        if status == "done":
+            return result
+        elif status == "expired":
+            raise RuntimeError("Video generation request expired before completion.")
+        elif status == "pending":
+            if logger:
+                elapsed = int(time.time() - start)
+                logger.info(f"Video generation pending... ({elapsed}s elapsed)")
+            time.sleep(VIDEO_POLL_INTERVAL)
+        else:
+            raise RuntimeError(f"Unexpected video status: {status}")
+
+    raise RuntimeError(f"Video generation timed out after {VIDEO_POLL_TIMEOUT}s")
+
+def download_video(url: str, save_path: str) -> str:
+    """Download a video from a temporary URL and save to disk. Returns absolute path."""
+    abs_path = os.path.abspath(save_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+    response = requests.get(url, timeout=120)
+    if response.status_code != 200:
+        raise RuntimeError(f"Video download failed (HTTP {response.status_code})")
+
+    with open(abs_path, "wb") as f:
+        f.write(response.content)
+    return abs_path
 
 # ---------------------------------------------------------------------------
 # MCP protocol handlers
@@ -653,7 +821,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
             {
                 "name": "generate_image",
-                "description": "Generate images using Grok's Aurora image model. Returns the image inline and saves to disk. Trigger: 'grok generate image', 'grok image', or 'grok create image'.",
+                "description": "Generate images using Grok's image models. Returns the image inline and saves to disk. Trigger: 'grok generate image', 'grok image', or 'grok create image'.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -661,6 +829,12 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                             "type": "string",
                             "description": "Image generation prompt describing what to create",
                             "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Image model to use (default: grok-imagine-image at $0.02/img)",
+                            "enum": ["grok-2-image-1212", "grok-imagine-image", "grok-imagine-image-pro"],
+                            "default": "grok-imagine-image"
                         },
                         "n": {
                             "type": "integer",
@@ -671,8 +845,13 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         },
                         "aspect_ratio": {
                             "type": "string",
-                            "description": "Aspect ratio: '1:1', '16:9', '9:16', '4:3', '3:4'",
-                            "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"]
+                            "description": "Aspect ratio for the generated image",
+                            "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20", "auto"]
+                        },
+                        "resolution": {
+                            "type": "string",
+                            "description": "Image resolution: '1k' (~1024px) or '2k' (~2048px)",
+                            "enum": ["1k", "2k"]
                         },
                         "save_path": {
                             "type": "string",
@@ -683,8 +862,83 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 }
             },
             {
+                "name": "edit_image",
+                "description": "Edit an existing image using Grok's Imagine models. Supports style transfer, iterative refinement, and natural language editing. Trigger: 'grok edit image', 'grok modify image', or 'grok image edit'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Natural language description of the desired edits (e.g., 'make it look like an oil painting', 'add a sunset background')",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "image_path": {
+                            "type": "string",
+                            "description": "Absolute path to the source image to edit"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Image model to use (default: grok-imagine-image at $0.02/img)",
+                            "enum": ["grok-imagine-image", "grok-imagine-image-pro"],
+                            "default": "grok-imagine-image"
+                        },
+                        "save_path": {
+                            "type": "string",
+                            "description": "File path to save the edited image. If not provided, auto-saves to output directory."
+                        }
+                    },
+                    "required": ["prompt", "image_path"]
+                }
+            },
+            {
+                "name": "generate_video",
+                "description": "Generate videos using Grok's Imagine video model. Supports text-to-video, image-to-video, and video editing. Video generation is async and may take 1-5 minutes. Trigger: 'grok generate video', 'grok video', or 'grok create video'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Description of the video to generate or editing instructions",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "duration": {
+                            "type": "integer",
+                            "description": "Video duration in seconds (1-15). Not applicable for video editing.",
+                            "default": 5,
+                            "minimum": 1,
+                            "maximum": 15
+                        },
+                        "aspect_ratio": {
+                            "type": "string",
+                            "description": "Aspect ratio (default: 16:9). Not applicable for video editing.",
+                            "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+                            "default": "16:9"
+                        },
+                        "resolution": {
+                            "type": "string",
+                            "description": "Video resolution (default: 480p). Not applicable for video editing.",
+                            "enum": ["480p", "720p"],
+                            "default": "480p"
+                        },
+                        "image_path": {
+                            "type": "string",
+                            "description": "Absolute path to a source image for image-to-video mode. The image will be animated based on the prompt."
+                        },
+                        "video_url": {
+                            "type": "string",
+                            "description": "URL of a source video for video editing mode. Max 8.7 seconds input."
+                        },
+                        "save_path": {
+                            "type": "string",
+                            "description": "File path to save the video. If not provided, auto-saves to output directory."
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            },
+            {
                 "name": "analyze_image",
-                "description": "Analyze an image using Grok's vision model. Provide a file path and optional prompt. Trigger: 'grok analyze image', 'grok describe image', or 'grok vision'.",
+                "description": "Analyze an image using Grok's vision capabilities. Uses your configured default model (supports vision in grok-4+ models). Trigger: 'grok analyze image', 'grok describe image', or 'grok vision'.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -697,6 +951,11 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                             "description": "Question or instruction about the image",
                             "default": "Describe this image in detail",
                             "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Vision model to use. Defaults to your configured model. grok-2-vision-1212 for legacy, grok-4+ models support vision natively.",
+                            "enum": ["grok-2-vision-1212", "grok-4-1-fast-reasoning", "grok-4-1-fast-non-reasoning", "grok-4", "grok-4-0709"]
                         }
                     },
                     "required": ["image_path"]
@@ -910,9 +1169,11 @@ Provide specific, actionable feedback on:
                     raise ValueError("prompt cannot be empty")
                 n = min(max(int(arguments.get("n", 1)), 1), 10)
                 aspect_ratio = arguments.get("aspect_ratio")
+                resolution = arguments.get("resolution")
+                model = arguments.get("model", "grok-imagine-image")
                 save_path = arguments.get("save_path")
 
-                images = call_grok_image_gen(prompt, n, aspect_ratio)
+                images = call_grok_image_gen(prompt, n, aspect_ratio, model, resolution)
 
                 content_blocks = []
                 for i, img in enumerate(images):
@@ -938,6 +1199,111 @@ Provide specific, actionable feedback on:
                     "result": {"content": content_blocks},
                 }
 
+        elif tool_name == "edit_image":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                prompt = arguments.get("prompt", "")
+                prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
+                if not prompt.strip():
+                    raise ValueError("prompt cannot be empty")
+
+                image_path = arguments.get("image_path", "")
+                if not image_path.strip():
+                    raise ValueError("image_path cannot be empty")
+                if not os.path.isfile(image_path):
+                    raise ValueError(f"File not found: {image_path}")
+
+                model = arguments.get("model", "grok-imagine-image")
+                save_path = arguments.get("save_path")
+
+                with open(image_path, "rb") as f:
+                    image_base64 = base64.b64encode(f.read()).decode("utf-8")
+                mime_type = get_mime_type(image_path)
+
+                edited = call_grok_image_edit(prompt, image_base64, mime_type, model)
+
+                if not save_path:
+                    save_path = get_auto_save_path()
+                abs_path = save_image(edited["b64_json"], save_path)
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Edited image saved to: {abs_path}\nRevised prompt: {edited['revised_prompt']}",
+                            }
+                        ]
+                    },
+                }
+
+        elif tool_name == "generate_video":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                prompt = arguments.get("prompt", "")
+                prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
+                if not prompt.strip():
+                    raise ValueError("prompt cannot be empty")
+
+                duration = arguments.get("duration")
+                if duration is not None:
+                    duration = min(max(int(duration), 1), 15)
+                aspect_ratio = arguments.get("aspect_ratio")
+                resolution = arguments.get("resolution")
+                save_path = arguments.get("save_path")
+
+                # Image-to-video mode
+                image_path = arguments.get("image_path")
+                if image_path:
+                    if not os.path.isfile(image_path):
+                        raise ValueError(f"Image file not found: {image_path}")
+
+                # Video editing mode
+                video_url = arguments.get("video_url")
+
+                # Submit generation request
+                vid_request_id = call_grok_video_gen(
+                    prompt, duration, aspect_ratio, resolution, image_path, video_url
+                )
+                logger.info(f"Video generation submitted: {vid_request_id}")
+
+                # Poll for completion
+                video_result = poll_video_status(vid_request_id)
+
+                # Download and save
+                video_data = video_result.get("video", {})
+                video_url_result = video_data.get("url")
+                if not video_url_result:
+                    raise RuntimeError(f"Video result missing URL: {video_result}")
+
+                if not save_path:
+                    save_path = get_video_save_path()
+                abs_path = download_video(video_url_result, save_path)
+
+                video_duration = video_data.get("duration", "unknown")
+                mode = "text-to-video"
+                if image_path:
+                    mode = "image-to-video"
+                elif arguments.get("video_url"):
+                    mode = "video-edit"
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Video saved to: {abs_path}\nMode: {mode}\nDuration: {video_duration}s\nRequest ID: {vid_request_id}",
+                            }
+                        ]
+                    },
+                }
+
         elif tool_name == "analyze_image":
             if not GROK_AVAILABLE:
                 result = f"Grok not available: {GROK_ERROR}"
@@ -950,12 +1316,13 @@ Provide specific, actionable feedback on:
 
                 prompt = arguments.get("prompt", "Describe this image in detail")
                 prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
+                model = arguments.get("model")
 
                 with open(image_path, "rb") as f:
                     image_base64 = base64.b64encode(f.read()).decode("utf-8")
                 mime_type = get_mime_type(image_path)
 
-                result = call_grok_vision(image_base64, mime_type, prompt)
+                result = call_grok_vision(image_base64, mime_type, prompt, model)
 
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
