@@ -1,6 +1,6 @@
 # Claude Code + Grok MCP Server
 
-MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, and vision analysis. Supports Grok 4.1, Aurora, Imagine, and Vision models.
+MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, vision analysis, and **multi-turn conversations**. Supports Grok 4.1, Aurora, Imagine, and Vision models.
 
 ## Quick Start
 
@@ -116,6 +116,9 @@ Once installed, use trigger phrases to invoke Grok:
 | `grok edit image`, `grok modify image` | Edit Image | "grok edit image at ./photo.jpg to look like an oil painting" |
 | `grok generate video`, `grok video` | Generate Video | "grok generate a 5 second video of ocean waves" |
 | `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
+| `grok chat`, `chat with grok` | Chat (multi-turn) | "grok chat: let's discuss our API design" |
+| `grok sessions` | List Sessions | "grok sessions" |
+| `end grok session` | End Session | "end grok session abc123" |
 
 Or ask naturally:
 
@@ -130,6 +133,35 @@ Or ask naturally:
 - *"Grok edit this image to add a sunset background"*
 - *"Grok generate a 10 second video of a drone flying over a forest"*
 - *"Grok describe what's in this screenshot"*
+- *"Start a conversation with Grok about database design"*
+
+---
+
+## Multi-Turn Conversations
+
+Have an ongoing conversation with Grok where it remembers the full context. Uses the xAI Chat Completions API with server-side session management.
+
+**Starting a conversation:**
+```
+grok chat: let's discuss the pros and cons of microservices
+```
+
+Grok responds and returns a `session_id`. Use it to continue:
+
+```
+grok chat (session abc123): what about event-driven architectures?
+```
+
+**Parameters:**
+- `message` (required) — the message to send
+- `session_id` (optional) — omit to start a new session, provide to continue an existing one
+- `model` (optional) — override model (first message only)
+- `system_prompt` (optional) — set a system prompt (first message only)
+
+**Managing sessions:**
+- Sessions expire automatically after 30 minutes of inactivity
+- Use `grok sessions` to list active sessions
+- Use `end grok session <id>` to clean up a session
 
 ---
 
@@ -363,7 +395,7 @@ python server.py config --show
 
 ## How It Works
 
-This MCP server uses the xAI REST API directly to communicate with Grok models. No SDK required — just the `requests` library for HTTP calls. Text-based tools use the Responses API (`/v1/responses`) with server-side tool support, while image and vision tools use their dedicated endpoints.
+This MCP server uses the xAI REST API directly to communicate with Grok models. No SDK required — just the `requests` library for HTTP calls. Text-based tools use the Responses API (`/v1/responses`) with server-side tool support, multi-turn conversations use the Chat Completions API (`/v1/chat/completions`) with server-side session management, and image/vision tools use their dedicated endpoints.
 
 **Tools provided:**
 | Tool | API | Model |
@@ -379,6 +411,9 @@ This MCP server uses the xAI REST API directly to communicate with Grok models. 
 | `edit_image` | Image Edits | Configurable (default: `grok-imagine-image`) |
 | `generate_video` | Video Generations | `grok-imagine-video` |
 | `analyze_image` | Chat Completions | Configurable (default: your configured model) |
+| `chat` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `list_sessions` | — (local) | — |
+| `end_session` | — (local) | — |
 
 ---
 

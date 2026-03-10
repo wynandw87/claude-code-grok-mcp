@@ -18,13 +18,14 @@ import os
 import signal
 import logging
 import time
+import uuid
 import requests
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 # Server version
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 # xAI API endpoints
 XAI_CHAT_API_URL = "https://api.x.ai/v1/chat/completions"
@@ -177,6 +178,24 @@ MAX_CODE_LENGTH = 500000    # 500K characters for code review
 # Default model - loaded from config
 DEFAULT_MODEL = get_default_model()
 
+# Session management
+SESSION_EXPIRY_SECONDS = 30 * 60  # 30 minutes
+sessions: Dict[str, Dict[str, Any]] = {}
+
+def generate_session_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+def prune_expired_sessions():
+    now = time.time()
+    expired = [
+        sid for sid, s in sessions.items()
+        if now - s["last_active"] > SESSION_EXPIRY_SECONDS
+    ]
+    for sid in expired:
+        if logger:
+            logger.info(f"Session {sid} expired (model={sessions[sid]['model']})")
+        del sessions[sid]
+
 # Graceful shutdown flag
 shutdown_requested = False
 logger = None
@@ -328,6 +347,37 @@ def call_grok_responses(
         raise RuntimeError(f"Grok API error (HTTP {response.status_code}): {response.text}")
 
     return parse_responses_output(response.json())
+
+def call_grok_chat(
+    messages: List[Dict[str, Any]],
+    model: Optional[str] = None,
+    timeout: int = TIMEOUT_DEFAULT,
+) -> str:
+    """Multi-turn chat via xAI Chat Completions API. Returns assistant text."""
+    payload: Dict[str, Any] = {
+        "model": model or DEFAULT_MODEL,
+        "messages": messages,
+        "stream": False,
+        "temperature": 0.7,
+    }
+
+    response = requests.post(
+        XAI_CHAT_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=timeout,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Grok API error (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    if "choices" in result and len(result["choices"]) > 0:
+        return result["choices"][0]["message"]["content"]
+    return ""
 
 # ---------------------------------------------------------------------------
 # File upload helpers
@@ -626,6 +676,81 @@ def download_video(url: str, save_path: str) -> str:
     with open(abs_path, "wb") as f:
         f.write(response.content)
     return abs_path
+
+# ---------------------------------------------------------------------------
+# Session tool handlers
+# ---------------------------------------------------------------------------
+
+def handle_chat(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle multi-turn chat with session management."""
+    prune_expired_sessions()
+
+    message = arguments.get("message", "").strip()
+    if not message:
+        return {"error": "message is required"}
+    message = truncate_input(message, MAX_PROMPT_LENGTH, "message")
+
+    session_id = arguments.get("session_id")
+
+    if session_id:
+        if session_id not in sessions:
+            return {
+                "error": f"Session '{session_id}' not found or expired. Start a new session by omitting session_id."
+            }
+        session = sessions[session_id]
+    else:
+        session_id = generate_session_id()
+        model = arguments.get("model", DEFAULT_MODEL)
+        session = {
+            "model": model,
+            "messages": [],
+            "created_at": time.time(),
+            "last_active": time.time(),
+        }
+        system_prompt = arguments.get("system_prompt")
+        if system_prompt:
+            session["messages"].append({"role": "system", "content": system_prompt})
+        sessions[session_id] = session
+
+    session["messages"].append({"role": "user", "content": message})
+    session["last_active"] = time.time()
+
+    response_text = call_grok_chat(session["messages"], model=session["model"])
+
+    session["messages"].append({"role": "assistant", "content": response_text})
+
+    turns = sum(1 for m in session["messages"] if m["role"] == "user")
+
+    return {
+        "response": response_text,
+        "session_id": session_id,
+        "model": session["model"],
+        "turn": turns,
+        "message_count": len(session["messages"]),
+    }
+
+def handle_list_sessions() -> Dict[str, Any]:
+    prune_expired_sessions()
+    result = []
+    for sid, s in sessions.items():
+        turns = sum(1 for m in s["messages"] if m["role"] == "user")
+        result.append({
+            "session_id": sid,
+            "model": s["model"],
+            "turns": turns,
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s["created_at"])),
+            "last_active": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s["last_active"])),
+        })
+    return {"sessions": result}
+
+def handle_end_session(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    session_id = arguments.get("session_id", "").strip()
+    if not session_id:
+        return {"error": "session_id is required"}
+    if session_id not in sessions:
+        return {"error": f"Session '{session_id}' not found"}
+    del sessions[session_id]
+    return {"ended": True, "session_id": session_id}
 
 # ---------------------------------------------------------------------------
 # MCP protocol handlers
@@ -960,7 +1085,68 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     },
                     "required": ["image_path"]
                 }
-            }
+            },
+            {
+                "name": "chat",
+                "description": (
+                    "Multi-turn conversation with Grok. "
+                    "Omit session_id to start a new conversation; "
+                    "provide session_id to continue an existing one. "
+                    "Grok remembers the full conversation history within a session. "
+                    "Trigger: 'grok chat', 'chat with grok', or 'start a conversation with grok'."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "The message to send",
+                            "maxLength": MAX_PROMPT_LENGTH,
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID to continue (omit to start new session)",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Override model (first message only)",
+                        },
+                        "system_prompt": {
+                            "type": "string",
+                            "description": "System prompt (first message only)",
+                        },
+                    },
+                    "required": ["message"],
+                },
+            },
+            {
+                "name": "list_sessions",
+                "description": (
+                    "List active Grok chat sessions. "
+                    "Trigger: 'grok sessions', 'list grok sessions'."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+            {
+                "name": "end_session",
+                "description": (
+                    "End and clean up a Grok chat session. "
+                    "Trigger: 'end grok session', 'grok end session'."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "The session ID to end",
+                        },
+                    },
+                    "required": ["session_id"],
+                },
+            },
         ]
     else:
         tools = [
@@ -1323,6 +1509,45 @@ Provide specific, actionable feedback on:
                 mime_type = get_mime_type(image_path)
 
                 result = call_grok_vision(image_base64, mime_type, prompt, model)
+
+        elif tool_name == "chat":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                chat_result = handle_chat(arguments)
+                if "error" in chat_result:
+                    raise ValueError(chat_result["error"])
+                text = json.dumps(chat_result, indent=2)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"GROK RESPONSE:\n\n{text}"}],
+                    },
+                }
+
+        elif tool_name == "list_sessions":
+            text = json.dumps(handle_list_sessions(), indent=2)
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [{"type": "text", "text": text}],
+                },
+            }
+
+        elif tool_name == "end_session":
+            end_result = handle_end_session(arguments)
+            if "error" in end_result:
+                raise ValueError(end_result["error"])
+            text = json.dumps(end_result, indent=2)
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [{"type": "text", "text": text}],
+                },
+            }
 
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
