@@ -6,8 +6,10 @@ Enables Claude Code to collaborate with xAI's Grok AI
 Usage:
   As MCP server (default):  python server.py
   Configure model:          python server.py config --model grok-4-1-fast-reasoning
+  Configure voice:          python server.py config --voice eve
   Show current config:      python server.py config --show
   List available models:    python server.py config --list-models
+  List available voices:    python server.py config --list-voices
 """
 
 import argparse
@@ -25,7 +27,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 # Server version
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 # xAI API endpoints
 XAI_CHAT_API_URL = "https://api.x.ai/v1/chat/completions"
@@ -34,6 +36,8 @@ XAI_IMAGE_API_URL = "https://api.x.ai/v1/images/generations"
 XAI_IMAGE_EDIT_API_URL = "https://api.x.ai/v1/images/edits"
 XAI_VIDEO_API_URL = "https://api.x.ai/v1/videos/generations"
 XAI_FILES_API_URL = "https://api.x.ai/v1/files"
+XAI_TTS_API_URL = "https://api.x.ai/v1/tts"
+XAI_STT_API_URL = "https://api.x.ai/v1/stt"
 
 # Timeouts (seconds)
 TIMEOUT_DEFAULT = int(os.environ.get("GROK_TIMEOUT", "180"))
@@ -41,12 +45,31 @@ TIMEOUT_TOOLS = 300   # web_search, x_search, code_interpreter
 TIMEOUT_UPLOAD = 120
 TIMEOUT_IMAGE = 120
 TIMEOUT_VIDEO = 300       # video generation submission
+TIMEOUT_AUDIO = 180       # TTS / STT
 VIDEO_POLL_INTERVAL = 5   # seconds between status checks
 VIDEO_POLL_TIMEOUT = 600  # max 10 minutes waiting for video
 
 # Default output directories for generated media
 OUTPUT_DIR = os.environ.get("GROK_OUTPUT_DIR", "./generated-images")
 VIDEO_OUTPUT_DIR = os.environ.get("GROK_VIDEO_OUTPUT_DIR", "./generated-videos")
+AUDIO_OUTPUT_DIR = os.environ.get("GROK_AUDIO_OUTPUT_DIR", "./generated-audio")
+
+# Audio input limits (for speech-to-text)
+MAX_AUDIO_SIZE_MB = 100
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus",
+    ".aac", ".webm", ".mp4", ".mpga", ".mpeg", ".wma",
+}
+
+# Available TTS voices (xAI Voice API)
+AVAILABLE_VOICES = {
+    "ara": "Warm female voice",
+    "eve": "Energetic female voice (default)",
+    "leo": "Authoritative male voice",
+    "rex": "Confident male voice",
+    "sal": "Neutral voice",
+}
+DEFAULT_VOICE_FALLBACK = "eve"
 
 # File upload limits
 MAX_FILE_SIZE_MB = 48
@@ -117,6 +140,13 @@ def get_default_model() -> str:
         return config["model"]
     return "grok-4-1-fast-reasoning"
 
+def get_default_voice() -> str:
+    """Get the default TTS voice from config file or use fallback"""
+    config = load_config()
+    if "voice" in config and config["voice"] in AVAILABLE_VOICES:
+        return config["voice"]
+    return DEFAULT_VOICE_FALLBACK
+
 def handle_config_command(args) -> int:
     """Handle the config subcommand"""
     if args.list_models:
@@ -131,10 +161,24 @@ def handle_config_command(args) -> int:
         print("* = currently selected")
         return 0
 
+    if args.list_voices:
+        print("Available TTS voices:")
+        print("-" * 50)
+        current = get_default_voice()
+        for voice, description in AVAILABLE_VOICES.items():
+            marker = " *" if voice == current else ""
+            print(f"  {voice}{marker}")
+            print(f"    {description}")
+        print()
+        print("* = currently selected")
+        return 0
+
     if args.show:
         config = load_config()
         current_model = get_default_model()
+        current_voice = get_default_voice()
         print(f"Current model: {current_model}")
+        print(f"Current voice: {current_voice}")
         print(f"Config file: {get_config_path()}")
         if config:
             print(f"Config contents: {json.dumps(config, indent=2)}")
@@ -154,11 +198,27 @@ def handle_config_command(args) -> int:
             return 0
         return 1
 
+    if args.voice:
+        if args.voice not in AVAILABLE_VOICES:
+            print(f"Error: Unknown voice '{args.voice}'", file=sys.stderr)
+            print(f"Run 'python server.py config --list-voices' to see available voices", file=sys.stderr)
+            return 1
+
+        config = load_config()
+        config["voice"] = args.voice
+        if save_config(config):
+            print(f"Default voice set to: {args.voice}")
+            print("Restart Claude Code for changes to take effect.")
+            return 0
+        return 1
+
     # No args - show help
     print("Usage:")
     print("  python server.py config --model <model>  Set default model")
+    print("  python server.py config --voice <voice>  Set default TTS voice")
     print("  python server.py config --show           Show current config")
     print("  python server.py config --list-models    List available models")
+    print("  python server.py config --list-voices    List available TTS voices")
     return 0
 
 # Only configure logging when running as MCP server (not CLI)
@@ -177,6 +237,9 @@ MAX_CODE_LENGTH = 500000    # 500K characters for code review
 
 # Default model - loaded from config
 DEFAULT_MODEL = get_default_model()
+
+# Default TTS voice - loaded from config
+DEFAULT_VOICE = get_default_voice()
 
 # Session management
 SESSION_EXPIRY_SECONDS = 30 * 60  # 30 minutes
@@ -678,6 +741,91 @@ def download_video(url: str, save_path: str) -> str:
     return abs_path
 
 # ---------------------------------------------------------------------------
+# Audio (TTS / STT) helpers
+# ---------------------------------------------------------------------------
+
+def get_audio_save_path(extension: str = "mp3") -> str:
+    """Generate an auto-save path for audio with timestamp."""
+    os.makedirs(AUDIO_OUTPUT_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(AUDIO_OUTPUT_DIR, f"grok_{timestamp}.{extension}")
+
+def validate_audio_path(file_path: str) -> str:
+    """Validate audio file exists, size, and extension. Returns absolute path."""
+    abs_path = os.path.abspath(file_path)
+    if not os.path.isfile(abs_path):
+        raise ValueError(f"File not found: {abs_path}")
+    size_mb = os.path.getsize(abs_path) / (1024 * 1024)
+    if size_mb > MAX_AUDIO_SIZE_MB:
+        raise ValueError(f"Audio file too large: {size_mb:.1f}MB (max {MAX_AUDIO_SIZE_MB}MB)")
+    ext = Path(abs_path).suffix.lower()
+    if ext not in SUPPORTED_AUDIO_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported audio type: {ext}. Supported: {', '.join(sorted(SUPPORTED_AUDIO_EXTENSIONS))}"
+        )
+    return abs_path
+
+def call_grok_tts(
+    text: str,
+    voice_id: str,
+    language: str = "en",
+) -> bytes:
+    """Call xAI text-to-speech API. Returns audio bytes (MP3)."""
+    payload: Dict[str, Any] = {
+        "text": text,
+        "voice_id": voice_id,
+        "language": language,
+    }
+
+    response = requests.post(
+        XAI_TTS_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=TIMEOUT_AUDIO,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"TTS request failed (HTTP {response.status_code}): {response.text}")
+
+    return response.content
+
+def call_grok_stt(
+    audio_path: str,
+    language: Optional[str] = None,
+    response_format: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Call xAI speech-to-text API. Returns parsed JSON response."""
+    abs_path = validate_audio_path(audio_path)
+    filename = os.path.basename(abs_path)
+
+    data: Dict[str, str] = {}
+    if language:
+        data["language"] = language
+    if response_format:
+        data["response_format"] = response_format
+
+    with open(abs_path, "rb") as f:
+        response = requests.post(
+            XAI_STT_API_URL,
+            files={"file": (filename, f)},
+            data=data or None,
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            timeout=TIMEOUT_AUDIO,
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"STT request failed (HTTP {response.status_code}): {response.text}")
+
+    # API may return JSON or plain text depending on response_format
+    content_type = response.headers.get("Content-Type", "")
+    if "application/json" in content_type:
+        return response.json()
+    return {"text": response.text}
+
+# ---------------------------------------------------------------------------
 # Session tool handlers
 # ---------------------------------------------------------------------------
 
@@ -1085,6 +1233,67 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     },
                     "required": ["image_path"]
                 }
+            },
+            {
+                "name": "text_to_speech",
+                "description": (
+                    "Convert text to natural-sounding speech using Grok's TTS API. "
+                    "Saves audio (MP3) to disk and returns the path. "
+                    "Trigger: 'grok speak', 'grok text to speech', 'grok tts', or 'grok say'."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The text to synthesize into speech. Supports inline speech tags for emotion (e.g. laughter, whispers, pauses).",
+                            "maxLength": MAX_PROMPT_LENGTH,
+                        },
+                        "voice": {
+                            "type": "string",
+                            "description": f"Voice to use (default: configured voice '{DEFAULT_VOICE}'). Options: ara (warm female), eve (energetic female), leo (authoritative male), rex (confident male), sal (neutral).",
+                            "enum": list(AVAILABLE_VOICES.keys()),
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Language code (default: 'en'). Grok TTS supports 20+ languages.",
+                            "default": "en",
+                        },
+                        "save_path": {
+                            "type": "string",
+                            "description": "File path to save the audio. If not provided, auto-saves to GROK_AUDIO_OUTPUT_DIR with a timestamp.",
+                        },
+                    },
+                    "required": ["text"],
+                },
+            },
+            {
+                "name": "speech_to_text",
+                "description": (
+                    "Transcribe an audio file to text using Grok's STT API. "
+                    "Supports MP3, WAV, FLAC, M4A, OGG, and other common formats. "
+                    "25 languages, with optional word-level timestamps and speaker diarization. "
+                    "Trigger: 'grok transcribe', 'grok speech to text', 'grok stt', or 'grok listen'."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "audio_path": {
+                            "type": "string",
+                            "description": "Absolute path to the audio file to transcribe.",
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "ISO language code (e.g. 'en', 'es'). Auto-detected if omitted.",
+                        },
+                        "response_format": {
+                            "type": "string",
+                            "description": "Response format. Use 'verbose_json' for word-level timestamps and speaker info; 'json' (default) for plain transcription; 'text' for raw text; 'srt' or 'vtt' for subtitles.",
+                            "enum": ["json", "text", "verbose_json", "srt", "vtt"],
+                        },
+                    },
+                    "required": ["audio_path"],
+                },
             },
             {
                 "name": "chat",
@@ -1510,6 +1719,79 @@ Provide specific, actionable feedback on:
 
                 result = call_grok_vision(image_base64, mime_type, prompt, model)
 
+        elif tool_name == "text_to_speech":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                text = arguments.get("text", "")
+                text = truncate_input(text, MAX_PROMPT_LENGTH, "text")
+                if not text.strip():
+                    raise ValueError("text cannot be empty")
+
+                voice = arguments.get("voice") or DEFAULT_VOICE
+                if voice not in AVAILABLE_VOICES:
+                    raise ValueError(
+                        f"Unknown voice '{voice}'. Available: {', '.join(AVAILABLE_VOICES.keys())}"
+                    )
+                language = arguments.get("language", "en")
+                save_path = arguments.get("save_path") or get_audio_save_path("mp3")
+
+                audio_bytes = call_grok_tts(text, voice, language)
+
+                abs_path = os.path.abspath(save_path)
+                os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+                with open(abs_path, "wb") as f:
+                    f.write(audio_bytes)
+
+                size_kb = len(audio_bytes) / 1024
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Audio saved to: {abs_path}\n"
+                                    f"Voice: {voice} ({AVAILABLE_VOICES[voice]})\n"
+                                    f"Language: {language}\n"
+                                    f"Size: {size_kb:.1f} KB"
+                                ),
+                            }
+                        ]
+                    },
+                }
+
+        elif tool_name == "speech_to_text":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                audio_path = arguments.get("audio_path", "")
+                if not audio_path.strip():
+                    raise ValueError("audio_path cannot be empty")
+
+                language = arguments.get("language")
+                response_format = arguments.get("response_format")
+
+                stt_result = call_grok_stt(audio_path, language, response_format)
+
+                # Surface a clean transcription up top, then the full payload
+                transcript = stt_result.get("text", "") if isinstance(stt_result, dict) else ""
+                payload_json = json.dumps(stt_result, indent=2)
+
+                if transcript:
+                    text_out = f"Transcription:\n\n{transcript}\n\n---\nFull response:\n{payload_json}"
+                else:
+                    text_out = f"STT response:\n{payload_json}"
+
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{"type": "text", "text": text_out}],
+                    },
+                }
+
         elif tool_name == "chat":
             if not GROK_AVAILABLE:
                 result = f"Grok not available: {GROK_ERROR}"
@@ -1586,6 +1868,7 @@ def main():
     logger.info(f"Starting Grok MCP server v{__version__}")
     logger.info(f"Using Responses API + direct HTTP (no SDK)")
     logger.info(f"Model: {DEFAULT_MODEL}")
+    logger.info(f"Default TTS voice: {DEFAULT_VOICE}")
     logger.info(f"Grok available: {GROK_AVAILABLE}")
     if not GROK_AVAILABLE:
         logger.warning(f"Grok initialization failed: {GROK_ERROR}")
@@ -1698,8 +1981,10 @@ if __name__ == "__main__":
 Examples:
   python server.py                                       Run as MCP server
   python server.py config --model grok-4-1-fast-reasoning  Set default model
+  python server.py config --voice eve                    Set default TTS voice
   python server.py config --show                         Show current config
   python server.py config --list-models                  List available models
+  python server.py config --list-voices                  List available TTS voices
         """
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -1707,8 +1992,10 @@ Examples:
     # Config subcommand
     config_parser = subparsers.add_parser("config", help="Configure the Grok MCP server")
     config_parser.add_argument("--model", "-m", help="Set the default Grok model")
+    config_parser.add_argument("--voice", "-v", help="Set the default TTS voice (ara, eve, leo, rex, sal)")
     config_parser.add_argument("--show", "-s", action="store_true", help="Show current configuration")
     config_parser.add_argument("--list-models", "-l", action="store_true", help="List available models")
+    config_parser.add_argument("--list-voices", action="store_true", help="List available TTS voices")
 
     args = parser.parse_args()
 

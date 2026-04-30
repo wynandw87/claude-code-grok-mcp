@@ -15,6 +15,8 @@ Use these phrases to invoke Grok:
 | `grok upload file` | Upload File | "grok upload file at ./report.pdf" |
 | `grok generate image`, `grok image` | Generate Image | "grok image of a cyberpunk cityscape" |
 | `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
+| `grok speak`, `grok tts`, `grok say` | Text-to-Speech | "grok speak: welcome to the demo" |
+| `grok transcribe`, `grok stt` | Speech-to-Text | "grok transcribe ./meeting.mp3" |
 
 ## Basic Conversation
 
@@ -220,6 +222,44 @@ Grok models offer massive context windows (up to 2M tokens with `grok-4-1-fast-r
 - **Analyzing uploaded files** (PDFs, code, CSVs, etc.)
 - Generating images with Aurora
 - Analyzing images and screenshots with vision
+
+## Text-to-Speech
+
+```
+# Use the configured default voice (eve)
+> grok speak: Welcome to the morning standup. Let's get started.
+
+# Override the voice for a single call
+> grok speak with voice rex: System nominal. All checks passed.
+
+# Save to a specific path
+> grok tts "this is a test" and save it to ./demo.mp3
+```
+
+The MP3 is saved to `./generated-audio/` by default (override with `GROK_AUDIO_OUTPUT_DIR`). To change the default voice permanently:
+
+```bash
+python server.py config --list-voices
+python server.py config --voice rex
+```
+
+## Speech-to-Text
+
+```
+# Basic transcription
+> grok transcribe ./meeting.mp3
+
+# Force a language
+> grok transcribe ./call.wav (language=es)
+
+# Word-level timestamps and speaker diarization
+> grok stt ./interview.flac with response_format=verbose_json
+
+# Generate subtitles
+> grok transcribe ./talk.mp4 with response_format=srt
+```
+
+Supports mp3, wav, flac, m4a, ogg, opus, aac, webm, mp4, mpga, mpeg, wma (max 100MB).
 
 ## Model Selection
 

@@ -1,6 +1,6 @@
 # Claude Code + Grok MCP Server
 
-MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, vision analysis, and **multi-turn conversations**. Supports Grok 4.1, Aurora, Imagine, and Vision models.
+MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, vision analysis, **text-to-speech**, **speech-to-text**, and **multi-turn conversations**. Supports Grok 4.1, Aurora, Imagine, Voice, and Vision models.
 
 ## Quick Start
 
@@ -116,6 +116,8 @@ Once installed, use trigger phrases to invoke Grok:
 | `grok edit image`, `grok modify image` | Edit Image | "grok edit image at ./photo.jpg to look like an oil painting" |
 | `grok generate video`, `grok video` | Generate Video | "grok generate a 5 second video of ocean waves" |
 | `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
+| `grok speak`, `grok tts`, `grok say` | Text-to-Speech | "grok speak: welcome to the demo" |
+| `grok transcribe`, `grok stt` | Speech-to-Text | "grok transcribe ./meeting.mp3" |
 | `grok chat`, `chat with grok` | Chat (multi-turn) | "grok chat: let's discuss our API design" |
 | `grok sessions` | List Sessions | "grok sessions" |
 | `end grok session` | End Session | "end grok session abc123" |
@@ -133,6 +135,8 @@ Or ask naturally:
 - *"Grok edit this image to add a sunset background"*
 - *"Grok generate a 10 second video of a drone flying over a forest"*
 - *"Grok describe what's in this screenshot"*
+- *"Have Grok read this paragraph aloud and save it as an MP3"*
+- *"Grok transcribe this meeting recording with speaker labels"*
 - *"Start a conversation with Grok about database design"*
 
 ---
@@ -256,6 +260,39 @@ Analyze images using Grok's vision capabilities. Uses your configured default mo
 - `prompt` (optional) — question about the image (default: "Describe this image in detail")
 - `model` (optional) — vision model override: `"grok-2-vision-1212"`, `"grok-4-1-fast-reasoning"`, `"grok-4"`, etc.
 
+## Text-to-Speech
+
+Convert text to natural-sounding speech using Grok's TTS API. Supports inline speech tags for emotion (laughter, whispers, pauses) and 20+ languages. Pricing: $4.20 per 1M characters.
+
+**Parameters:**
+- `text` (required) — the text to synthesize
+- `voice` (optional) — overrides the default voice for this call (see voice list below)
+- `language` (optional) — language code (default: `"en"`)
+- `save_path` (optional) — where to save the MP3; auto-saves to `./generated-audio/` with a timestamp if omitted
+
+**Available voices:**
+
+| Voice | Description |
+|-------|-------------|
+| `ara` | Warm female |
+| `eve` | Energetic female (default) |
+| `leo` | Authoritative male |
+| `rex` | Confident male |
+| `sal` | Neutral |
+
+The default voice is `eve`. To switch the default permanently, see [Changing the Default Voice](#changing-the-default-voice). To use a different voice for a single call, pass the `voice` parameter (e.g. *"grok speak with voice rex: ..."*).
+
+## Speech-to-Text
+
+Transcribe audio files using Grok's STT API. Supports 25 languages, word-level timestamps, and speaker diarization. Pricing: $0.10/hr (batch).
+
+**Parameters:**
+- `audio_path` (required) — absolute path to the audio file
+- `language` (optional) — ISO language code (e.g. `"en"`, `"es"`); auto-detected if omitted
+- `response_format` (optional) — `"json"` (default), `"text"`, `"verbose_json"` (timestamps + speakers), `"srt"`, or `"vtt"`
+
+**Supported audio formats:** mp3, wav, flac, m4a, ogg, opus, aac, webm, mp4, mpga, mpeg, wma. Max 100MB per file.
+
 ---
 
 ## Environment Variables
@@ -265,6 +302,7 @@ Analyze images using Grok's vision capabilities. Uses your configured default mo
 | `XAI_API_KEY` | Your xAI API key (required) | — |
 | `GROK_OUTPUT_DIR` | Directory for auto-saved generated images | `./generated-images` |
 | `GROK_VIDEO_OUTPUT_DIR` | Directory for auto-saved generated videos | `./generated-videos` |
+| `GROK_AUDIO_OUTPUT_DIR` | Directory for auto-saved TTS audio output | `./generated-audio` |
 | `GROK_TIMEOUT` | Default timeout in seconds for API calls | `180` |
 
 ---
@@ -343,6 +381,60 @@ Close and reopen Claude Code for the change to take effect.
 
 ---
 
+## Changing the Default Voice
+
+The default text-to-speech voice is `eve` (energetic female). You can switch it permanently with the same config CLI used for models. You can also override the default per-call by passing `voice` to the `text_to_speech` tool — e.g. *"grok speak with voice rex: ..."*.
+
+### 1. See available voices
+
+Run from the `claude-code-grok-mcp` folder:
+
+**macOS / Linux:**
+```text
+python3 server.py config --list-voices
+```
+
+**Windows:**
+```text
+python server.py config --list-voices
+```
+
+**Output:**
+```
+Available TTS voices:
+--------------------------------------------------
+  ara
+    Warm female voice
+  eve *
+    Energetic female voice (default)
+  leo
+    Authoritative male voice
+  rex
+    Confident male voice
+  sal
+    Neutral voice
+
+* = currently selected
+```
+
+### 2. Set your preferred voice
+
+**macOS / Linux:**
+```text
+python3 server.py config --voice rex
+```
+
+**Windows:**
+```text
+python server.py config --voice rex
+```
+
+### 3. Restart Claude Code
+
+Close and reopen Claude Code for the change to take effect.
+
+---
+
 ## Troubleshooting
 
 ### Fix API Key
@@ -411,6 +503,8 @@ This MCP server uses the xAI REST API directly to communicate with Grok models. 
 | `edit_image` | Image Edits | Configurable (default: `grok-imagine-image`) |
 | `generate_video` | Video Generations | `grok-imagine-video` |
 | `analyze_image` | Chat Completions | Configurable (default: your configured model) |
+| `text_to_speech` | TTS (`/v1/tts`) | Grok Voice (configurable voice, default: `eve`) |
+| `speech_to_text` | STT (`/v1/stt`) | Grok Voice |
 | `chat` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
 | `list_sessions` | — (local) | — |
 | `end_session` | — (local) | — |
