@@ -21,3 +21,6 @@ Thumbs.db
 # Project specific
 *.log
 .claude/
+generated-audio/
+generated-images/
+generated-videos/

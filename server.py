@@ -5,7 +5,7 @@ Enables Claude Code to collaborate with xAI's Grok AI
 
 Usage:
   As MCP server (default):  python server.py
-  Configure model:          python server.py config --model grok-4-1-fast-reasoning
+  Configure model:          python server.py config --model grok-4.3
   Configure voice:          python server.py config --voice eve
   Show current config:      python server.py config --show
   List available models:    python server.py config --list-models
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 # Server version
-__version__ = "3.3.0"
+__version__ = "3.6.0"
 
 # xAI API endpoints
 XAI_CHAT_API_URL = "https://api.x.ai/v1/chat/completions"
@@ -35,6 +35,7 @@ XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses"
 XAI_IMAGE_API_URL = "https://api.x.ai/v1/images/generations"
 XAI_IMAGE_EDIT_API_URL = "https://api.x.ai/v1/images/edits"
 XAI_VIDEO_API_URL = "https://api.x.ai/v1/videos/generations"
+XAI_VIDEO_EDIT_API_URL = "https://api.x.ai/v1/videos/edits"
 XAI_FILES_API_URL = "https://api.x.ai/v1/files"
 XAI_TTS_API_URL = "https://api.x.ai/v1/tts"
 XAI_STT_API_URL = "https://api.x.ai/v1/stt"
@@ -55,13 +56,14 @@ VIDEO_OUTPUT_DIR = os.environ.get("GROK_VIDEO_OUTPUT_DIR", "./generated-videos")
 AUDIO_OUTPUT_DIR = os.environ.get("GROK_AUDIO_OUTPUT_DIR", "./generated-audio")
 
 # Audio input limits (for speech-to-text)
-MAX_AUDIO_SIZE_MB = 100
+MAX_AUDIO_SIZE_MB = 500
 SUPPORTED_AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus",
     ".aac", ".webm", ".mp4", ".mpga", ".mpeg", ".wma",
 }
 
-# Available TTS voices (xAI Voice API)
+# Available built-in TTS voices (xAI Voice API)
+# Custom cloned voices (8-char lowercase alphanumeric IDs) are also accepted.
 AVAILABLE_VOICES = {
     "ara": "Warm female voice",
     "eve": "Energetic female voice (default)",
@@ -70,6 +72,26 @@ AVAILABLE_VOICES = {
     "sal": "Neutral voice",
 }
 DEFAULT_VOICE_FALLBACK = "eve"
+
+# Custom voice IDs from xAI's voice cloning are 8-char lowercase alphanumeric.
+import re as _re
+_CUSTOM_VOICE_ID_RE = _re.compile(r"^[a-z0-9]{8}$")
+
+def is_valid_voice_id(voice: str) -> bool:
+    """Accept built-in voices or custom cloned voice IDs."""
+    if not voice:
+        return False
+    if voice in AVAILABLE_VOICES:
+        return True
+    return bool(_CUSTOM_VOICE_ID_RE.match(voice))
+
+# Supported TTS audio output formats and sample rates (xAI TTS API)
+TTS_AUDIO_FORMATS = ["mp3", "wav", "pcm", "mulaw", "alaw"]
+TTS_SAMPLE_RATES = [8000, 16000, 22050, 24000, 44100, 48000]
+TTS_MP3_BITRATES = [32, 64, 96, 128, 192]
+TTS_FORMAT_EXTENSIONS = {
+    "mp3": "mp3", "wav": "wav", "pcm": "pcm", "mulaw": "ulaw", "alaw": "alaw",
+}
 
 # File upload limits
 MAX_FILE_SIZE_MB = 48
@@ -80,23 +102,15 @@ SUPPORTED_FILE_EXTENSIONS = {
     ".pdf", ".log", ".sql", ".r", ".swift", ".kt", ".scala", ".lua",
 }
 
-# Available Grok models (from xAI API)
+# Available Grok models (from xAI API, current as of 2026-05-16)
 AVAILABLE_MODELS = {
-    "grok-4-1-fast-reasoning": "Grok 4.1 Fast with reasoning (2M context) - Default",
-    "grok-4": "Grok 4 flagship model",
-    "grok-4-1-fast-non-reasoning": "Grok 4.1 Fast without reasoning (2M context)",
-    "grok-4-fast-reasoning": "Grok 4 Fast with reasoning",
-    "grok-4-fast-non-reasoning": "Grok 4 Fast without reasoning",
-    "grok-4-0709": "Grok 4 (July 2025 release)",
-    "grok-3": "Grok 3 - Previous flagship (128K context)",
-    "grok-3-mini": "Grok 3 Mini - Lighter/cheaper option (128K context)",
-    "grok-2-1212": "Grok 2 (128K context)",
-    "grok-2-vision-1212": "Grok 2 Vision (32K context)",
-    "grok-code-fast-1": "Grok Code Fast - Optimized for coding",
+    "grok-4.3": "Grok 4.3 flagship (1M context, $1.25/$2.50 per 1M tokens) - Default",
+    "grok-4.20-0309-reasoning": "Grok 4.20 with reasoning (1M context, $1.25/$2.50)",
+    "grok-4.20-0309-non-reasoning": "Grok 4.20 without reasoning (1M context, $1.25/$2.50)",
+    "grok-4.20-multi-agent-0309": "Grok 4.20 multi-agent (2M context, $1.25/$2.50)",
     # Image generation models
-    "grok-2-image-1212": "Aurora image generation (text→image, $0.07/img)",
     "grok-imagine-image": "Imagine image gen + editing (text,image→image, $0.02/img)",
-    "grok-imagine-image-pro": "Imagine Pro image gen + editing (higher quality, $0.07/img)",
+    "grok-imagine-image-quality": "Imagine higher-quality image gen + editing ($0.05/img)",
     # Video generation model
     "grok-imagine-video": "Imagine video generation (text,image,video→video, $0.05/sec)",
 }
@@ -138,7 +152,7 @@ def get_default_model() -> str:
     config = load_config()
     if "model" in config:
         return config["model"]
-    return "grok-4-1-fast-reasoning"
+    return "grok-4.3"
 
 def get_default_voice() -> str:
     """Get the default TTS voice from config file or use fallback"""
@@ -651,9 +665,12 @@ def call_grok_video_gen(
     aspect_ratio: Optional[str] = None,
     resolution: Optional[str] = None,
     image_path: Optional[str] = None,
-    video_url: Optional[str] = None,
 ) -> str:
-    """Submit a video generation request. Returns request_id for polling."""
+    """Submit a video generation request to /v1/videos/generations.
+
+    Returns request_id for polling. Supports text-to-video and image-to-video.
+    For video editing, use call_grok_video_edit instead.
+    """
     payload: Dict[str, Any] = {
         "model": "grok-imagine-video",
         "prompt": prompt,
@@ -665,16 +682,12 @@ def call_grok_video_gen(
     if resolution:
         payload["resolution"] = resolution
 
-    # Image-to-video: read image and send as base64 data URI
+    # Image-to-video: read image and send as base64 data URI inside `image` object
     if image_path:
         with open(image_path, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode("utf-8")
         mime = get_mime_type(image_path)
-        payload["image_url"] = f"data:{mime};base64,{img_b64}"
-
-    # Video editing: pass video URL directly
-    if video_url:
-        payload["video_url"] = video_url
+        payload["image"] = {"url": f"data:{mime};base64,{img_b64}"}
 
     response = requests.post(
         XAI_VIDEO_API_URL,
@@ -695,6 +708,55 @@ def call_grok_video_gen(
         raise RuntimeError(f"Video generation returned no request_id: {result}")
     return request_id
 
+def call_grok_video_edit(
+    prompt: str,
+    video_url: Optional[str] = None,
+    video_path: Optional[str] = None,
+    file_id: Optional[str] = None,
+) -> str:
+    """Submit a video edit request to /v1/videos/edits.
+
+    Exactly one of video_url, video_path, or file_id must be provided.
+    Source must be .mp4 (H.264 / H.265 / AV1). Returns request_id for polling.
+    """
+    sources = sum(1 for v in (video_url, video_path, file_id) if v)
+    if sources != 1:
+        raise ValueError("Provide exactly one of: video_url, video_path, file_id")
+
+    if video_path:
+        with open(video_path, "rb") as f:
+            vid_b64 = base64.b64encode(f.read()).decode("utf-8")
+        video_ref: Dict[str, str] = {"url": f"data:video/mp4;base64,{vid_b64}"}
+    elif video_url:
+        video_ref = {"url": video_url}
+    else:
+        video_ref = {"file_id": file_id}  # type: ignore[dict-item]
+
+    payload: Dict[str, Any] = {
+        "model": "grok-imagine-video",
+        "prompt": prompt,
+        "video": video_ref,
+    }
+
+    response = requests.post(
+        XAI_VIDEO_EDIT_API_URL,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        timeout=TIMEOUT_VIDEO,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Video edit failed (HTTP {response.status_code}): {response.text}")
+
+    result = response.json()
+    request_id = result.get("request_id")
+    if not request_id:
+        raise RuntimeError(f"Video edit returned no request_id: {result}")
+    return request_id
+
 def poll_video_status(request_id: str) -> Dict[str, Any]:
     """Poll for video completion. Returns video result when done."""
     poll_url = f"https://api.x.ai/v1/videos/{request_id}"
@@ -707,7 +769,9 @@ def poll_video_status(request_id: str) -> Dict[str, Any]:
             timeout=60,
         )
 
-        if response.status_code != 200:
+        # The xAI API returns HTTP 202 (with {"status":"pending"}) while the job
+        # is in flight, and HTTP 200 once it's done. Treat both as pollable.
+        if response.status_code not in (200, 202):
             raise RuntimeError(f"Video poll failed (HTTP {response.status_code}): {response.text}")
 
         result = response.json()
@@ -715,12 +779,14 @@ def poll_video_status(request_id: str) -> Dict[str, Any]:
 
         if status == "done":
             return result
-        elif status == "expired":
-            raise RuntimeError("Video generation request expired before completion.")
+        elif status in ("expired", "failed"):
+            raise RuntimeError(f"Video generation {status}: {result.get('error', result)}")
         elif status == "pending":
             if logger:
                 elapsed = int(time.time() - start)
-                logger.info(f"Video generation pending... ({elapsed}s elapsed)")
+                progress = result.get("progress")
+                progress_str = f", progress={progress}%" if progress is not None else ""
+                logger.info(f"Video generation pending... ({elapsed}s elapsed{progress_str})")
             time.sleep(VIDEO_POLL_INTERVAL)
         else:
             raise RuntimeError(f"Unexpected video status: {status}")
@@ -769,13 +835,29 @@ def call_grok_tts(
     text: str,
     voice_id: str,
     language: str = "en",
+    audio_format: Optional[str] = None,
+    sample_rate: Optional[int] = None,
+    bitrate: Optional[int] = None,
 ) -> bytes:
-    """Call xAI text-to-speech API. Returns audio bytes (MP3)."""
+    """Call xAI text-to-speech API. Returns audio bytes.
+
+    audio_format / sample_rate / bitrate are mapped into the API's nested
+    output_format object. bitrate is given in kbps and converted to bps.
+    """
     payload: Dict[str, Any] = {
         "text": text,
         "voice_id": voice_id,
         "language": language,
     }
+    output_format: Dict[str, Any] = {}
+    if audio_format:
+        output_format["codec"] = audio_format
+    if sample_rate:
+        output_format["sample_rate"] = sample_rate
+    if bitrate:
+        output_format["bit_rate"] = bitrate * 1000  # kbps → bps
+    if output_format:
+        payload["output_format"] = output_format
 
     response = requests.post(
         XAI_TTS_API_URL,
@@ -793,37 +875,72 @@ def call_grok_tts(
     return response.content
 
 def call_grok_stt(
-    audio_path: str,
+    audio_path: Optional[str] = None,
+    audio_url: Optional[str] = None,
     language: Optional[str] = None,
-    response_format: Optional[str] = None,
+    format: Optional[bool] = None,
+    diarize: Optional[bool] = None,
+    multichannel: Optional[bool] = None,
+    channels: Optional[int] = None,
+    keyterm: Optional[List[str]] = None,
+    filler_words: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Call xAI speech-to-text API. Returns parsed JSON response."""
-    abs_path = validate_audio_path(audio_path)
-    filename = os.path.basename(abs_path)
+    """Call xAI speech-to-text API (/v1/stt). Returns parsed JSON response.
 
-    data: Dict[str, str] = {}
+    Provide exactly one of audio_path (local file, uploaded multipart) or
+    audio_url (remote URL passed via the `url` form field).
+    """
+    if bool(audio_path) == bool(audio_url):
+        raise ValueError("Provide exactly one of audio_path or audio_url")
+
+    data: Dict[str, Any] = {}
+    if audio_url:
+        data["url"] = audio_url
     if language:
         data["language"] = language
-    if response_format:
-        data["response_format"] = response_format
+    if format is not None:
+        data["format"] = "true" if format else "false"
+    if diarize is not None:
+        data["diarize"] = "true" if diarize else "false"
+    if multichannel is not None:
+        data["multichannel"] = "true" if multichannel else "false"
+    if channels is not None:
+        data["channels"] = str(channels)
+    if filler_words is not None:
+        data["filler_words"] = "true" if filler_words else "false"
+    # multipart form: repeat the field for arrays
+    files_list: List[Any] = []
+    if keyterm:
+        for term in keyterm:
+            files_list.append(("keyterm", (None, term)))
 
-    with open(abs_path, "rb") as f:
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+
+    if audio_path:
+        abs_path = validate_audio_path(audio_path)
+        filename = os.path.basename(abs_path)
+        with open(abs_path, "rb") as f:
+            files_list.append(("file", (filename, f)))
+            response = requests.post(
+                XAI_STT_API_URL,
+                files=files_list,
+                data=data or None,
+                headers=headers,
+                timeout=TIMEOUT_AUDIO,
+            )
+    else:
         response = requests.post(
             XAI_STT_API_URL,
-            files={"file": (filename, f)},
-            data=data or None,
-            headers={"Authorization": f"Bearer {API_KEY}"},
+            files=files_list or None,
+            data=data,
+            headers=headers,
             timeout=TIMEOUT_AUDIO,
         )
 
     if response.status_code != 200:
         raise RuntimeError(f"STT request failed (HTTP {response.status_code}): {response.text}")
 
-    # API may return JSON or plain text depending on response_format
-    content_type = response.headers.get("Content-Type", "")
-    if "application/json" in content_type:
-        return response.json()
-    return {"text": response.text}
+    return response.json()
 
 # ---------------------------------------------------------------------------
 # Session tool handlers
@@ -1106,7 +1223,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "model": {
                             "type": "string",
                             "description": "Image model to use (default: grok-imagine-image at $0.02/img)",
-                            "enum": ["grok-2-image-1212", "grok-imagine-image", "grok-imagine-image-pro"],
+                            "enum": ["grok-imagine-image", "grok-imagine-image-quality"],
                             "default": "grok-imagine-image"
                         },
                         "n": {
@@ -1152,7 +1269,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "model": {
                             "type": "string",
                             "description": "Image model to use (default: grok-imagine-image at $0.02/img)",
-                            "enum": ["grok-imagine-image", "grok-imagine-image-pro"],
+                            "enum": ["grok-imagine-image", "grok-imagine-image-quality"],
                             "default": "grok-imagine-image"
                         },
                         "save_path": {
@@ -1165,41 +1282,37 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
             {
                 "name": "generate_video",
-                "description": "Generate videos using Grok's Imagine video model. Supports text-to-video, image-to-video, and video editing. Video generation is async and may take 1-5 minutes. Trigger: 'grok generate video', 'grok video', or 'grok create video'.",
+                "description": "Generate videos using Grok's Imagine video model. Supports text-to-video and image-to-video. Video generation is async and may take 1-5 minutes. For editing an existing video, use the 'edit_video' tool. Trigger: 'grok generate video', 'grok video', or 'grok create video'.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "prompt": {
                             "type": "string",
-                            "description": "Description of the video to generate or editing instructions",
+                            "description": "Description of the video to generate",
                             "maxLength": MAX_PROMPT_LENGTH
                         },
                         "duration": {
                             "type": "integer",
-                            "description": "Video duration in seconds (1-15). Not applicable for video editing.",
-                            "default": 5,
+                            "description": "Video duration in seconds (1-15, default: 8).",
+                            "default": 8,
                             "minimum": 1,
                             "maximum": 15
                         },
                         "aspect_ratio": {
                             "type": "string",
-                            "description": "Aspect ratio (default: 16:9). Not applicable for video editing.",
+                            "description": "Aspect ratio (default: 16:9).",
                             "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
                             "default": "16:9"
                         },
                         "resolution": {
                             "type": "string",
-                            "description": "Video resolution (default: 480p). Not applicable for video editing.",
-                            "enum": ["480p", "720p"],
+                            "description": "Video resolution (default: 480p).",
+                            "enum": ["480p", "720p", "1080p"],
                             "default": "480p"
                         },
                         "image_path": {
                             "type": "string",
                             "description": "Absolute path to a source image for image-to-video mode. The image will be animated based on the prompt."
-                        },
-                        "video_url": {
-                            "type": "string",
-                            "description": "URL of a source video for video editing mode. Max 8.7 seconds input."
                         },
                         "save_path": {
                             "type": "string",
@@ -1210,8 +1323,39 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                 }
             },
             {
+                "name": "edit_video",
+                "description": "Edit an existing video using Grok's Imagine video model via /v1/videos/edits. Apply natural-language edits to a source MP4 (H.264 / H.265 / AV1). Provide exactly one of video_path, video_url, or file_id. Trigger: 'grok edit video' or 'grok modify video'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Natural-language edit instructions (e.g. 'give the woman a silver necklace', 'change the background to a snowy mountain').",
+                            "maxLength": MAX_PROMPT_LENGTH
+                        },
+                        "video_path": {
+                            "type": "string",
+                            "description": "Absolute path to a local source MP4 to edit. Uploaded inline as a base64 data URI."
+                        },
+                        "video_url": {
+                            "type": "string",
+                            "description": "Public URL of a source MP4 to edit (alternative to video_path)."
+                        },
+                        "file_id": {
+                            "type": "string",
+                            "description": "xAI file_id of a previously uploaded video (alternative to video_path / video_url)."
+                        },
+                        "save_path": {
+                            "type": "string",
+                            "description": "File path to save the edited video. If not provided, auto-saves to output directory."
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            },
+            {
                 "name": "analyze_image",
-                "description": "Analyze an image using Grok's vision capabilities. Uses your configured default model (supports vision in grok-4+ models). Trigger: 'grok analyze image', 'grok describe image', or 'grok vision'.",
+                "description": "Analyze an image using Grok's vision capabilities. Uses your configured default model (Grok 4.3 and 4.20 support vision natively). Trigger: 'grok analyze image', 'grok describe image', or 'grok vision'.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1227,8 +1371,8 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         },
                         "model": {
                             "type": "string",
-                            "description": "Vision model to use. Defaults to your configured model. grok-2-vision-1212 for legacy, grok-4+ models support vision natively.",
-                            "enum": ["grok-2-vision-1212", "grok-4-1-fast-reasoning", "grok-4-1-fast-non-reasoning", "grok-4", "grok-4-0709"]
+                            "description": "Vision model to use. Defaults to your configured model. Grok 4.3 and 4.20 variants all support vision natively.",
+                            "enum": ["grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4.20-multi-agent-0309"]
                         }
                     },
                     "required": ["image_path"]
@@ -1251,13 +1395,27 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         },
                         "voice": {
                             "type": "string",
-                            "description": f"Voice to use (default: configured voice '{DEFAULT_VOICE}'). Options: ara (warm female), eve (energetic female), leo (authoritative male), rex (confident male), sal (neutral).",
-                            "enum": list(AVAILABLE_VOICES.keys()),
+                            "description": f"Built-in voice (default: configured voice '{DEFAULT_VOICE}') — ara (warm female), eve (energetic female), leo (authoritative male), rex (confident male), sal (neutral) — OR a custom cloned voice ID (8 lowercase alphanumeric characters).",
                         },
                         "language": {
                             "type": "string",
                             "description": "Language code (default: 'en'). Grok TTS supports 20+ languages.",
                             "default": "en",
+                        },
+                        "audio_format": {
+                            "type": "string",
+                            "description": "Output codec (default: mp3).",
+                            "enum": TTS_AUDIO_FORMATS,
+                        },
+                        "sample_rate": {
+                            "type": "integer",
+                            "description": "Sample rate in Hz (default: 24000).",
+                            "enum": TTS_SAMPLE_RATES,
+                        },
+                        "bitrate": {
+                            "type": "integer",
+                            "description": "MP3 bitrate in kbps (default: 128). MP3 only.",
+                            "enum": TTS_MP3_BITRATES,
                         },
                         "save_path": {
                             "type": "string",
@@ -1270,9 +1428,10 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             {
                 "name": "speech_to_text",
                 "description": (
-                    "Transcribe an audio file to text using Grok's STT API. "
-                    "Supports MP3, WAV, FLAC, M4A, OGG, and other common formats. "
-                    "25 languages, with optional word-level timestamps and speaker diarization. "
+                    "Transcribe an audio file to text using Grok's STT API (/v1/stt). "
+                    "Supports MP3, WAV, FLAC, M4A, OGG, and other common formats (max 500MB). "
+                    "24 languages with optional speaker diarization, multi-channel, and keyterm boosting. "
+                    "Provide exactly one of audio_path or audio_url. "
                     "Trigger: 'grok transcribe', 'grok speech to text', 'grok stt', or 'grok listen'."
                 ),
                 "inputSchema": {
@@ -1280,19 +1439,43 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                     "properties": {
                         "audio_path": {
                             "type": "string",
-                            "description": "Absolute path to the audio file to transcribe.",
+                            "description": "Absolute path to a local audio file to transcribe.",
+                        },
+                        "audio_url": {
+                            "type": "string",
+                            "description": "Public URL of the audio to transcribe (alternative to audio_path).",
                         },
                         "language": {
                             "type": "string",
                             "description": "ISO language code (e.g. 'en', 'es'). Auto-detected if omitted.",
                         },
-                        "response_format": {
-                            "type": "string",
-                            "description": "Response format. Use 'verbose_json' for word-level timestamps and speaker info; 'json' (default) for plain transcription; 'text' for raw text; 'srt' or 'vtt' for subtitles.",
-                            "enum": ["json", "text", "verbose_json", "srt", "vtt"],
+                        "format": {
+                            "type": "boolean",
+                            "description": "Enable text formatting (punctuation, casing). Default: false.",
+                        },
+                        "diarize": {
+                            "type": "boolean",
+                            "description": "Enable speaker diarization (per-speaker labels). Default: false.",
+                        },
+                        "multichannel": {
+                            "type": "boolean",
+                            "description": "Enable per-channel transcription. Default: false.",
+                        },
+                        "channels": {
+                            "type": "integer",
+                            "description": "Number of channels in the source audio (for raw/headerless audio).",
+                        },
+                        "keyterm": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Up to 100 keyterms to boost recognition for (proper nouns, jargon, etc.).",
+                            "maxItems": 100,
+                        },
+                        "filler_words": {
+                            "type": "boolean",
+                            "description": "Include filler words ('um', 'uh') in the transcript. Default: false.",
                         },
                     },
-                    "required": ["audio_path"],
                 },
             },
             {
@@ -1657,12 +1840,9 @@ Provide specific, actionable feedback on:
                     if not os.path.isfile(image_path):
                         raise ValueError(f"Image file not found: {image_path}")
 
-                # Video editing mode
-                video_url = arguments.get("video_url")
-
                 # Submit generation request
                 vid_request_id = call_grok_video_gen(
-                    prompt, duration, aspect_ratio, resolution, image_path, video_url
+                    prompt, duration, aspect_ratio, resolution, image_path
                 )
                 logger.info(f"Video generation submitted: {vid_request_id}")
 
@@ -1680,11 +1860,7 @@ Provide specific, actionable feedback on:
                 abs_path = download_video(video_url_result, save_path)
 
                 video_duration = video_data.get("duration", "unknown")
-                mode = "text-to-video"
-                if image_path:
-                    mode = "image-to-video"
-                elif arguments.get("video_url"):
-                    mode = "video-edit"
+                mode = "image-to-video" if image_path else "text-to-video"
 
                 return {
                     "jsonrpc": "2.0",
@@ -1694,6 +1870,53 @@ Provide specific, actionable feedback on:
                             {
                                 "type": "text",
                                 "text": f"Video saved to: {abs_path}\nMode: {mode}\nDuration: {video_duration}s\nRequest ID: {vid_request_id}",
+                            }
+                        ]
+                    },
+                }
+
+        elif tool_name == "edit_video":
+            if not GROK_AVAILABLE:
+                result = f"Grok not available: {GROK_ERROR}"
+            else:
+                prompt = arguments.get("prompt", "")
+                prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
+                if not prompt.strip():
+                    raise ValueError("prompt cannot be empty")
+
+                video_path = arguments.get("video_path")
+                video_url = arguments.get("video_url")
+                file_id = arguments.get("file_id")
+                save_path = arguments.get("save_path")
+
+                if video_path and not os.path.isfile(video_path):
+                    raise ValueError(f"Video file not found: {video_path}")
+
+                vid_request_id = call_grok_video_edit(
+                    prompt, video_url=video_url, video_path=video_path, file_id=file_id
+                )
+                logger.info(f"Video edit submitted: {vid_request_id}")
+
+                video_result = poll_video_status(vid_request_id)
+                video_data = video_result.get("video", {})
+                video_url_result = video_data.get("url")
+                if not video_url_result:
+                    raise RuntimeError(f"Video edit result missing URL: {video_result}")
+
+                if not save_path:
+                    save_path = get_video_save_path()
+                abs_path = download_video(video_url_result, save_path)
+
+                source = "video_path" if video_path else ("video_url" if video_url else "file_id")
+                video_duration = video_data.get("duration", "unknown")
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Edited video saved to: {abs_path}\nSource: {source}\nDuration: {video_duration}s\nRequest ID: {vid_request_id}",
                             }
                         ]
                     },
@@ -1729,20 +1952,32 @@ Provide specific, actionable feedback on:
                     raise ValueError("text cannot be empty")
 
                 voice = arguments.get("voice") or DEFAULT_VOICE
-                if voice not in AVAILABLE_VOICES:
+                if not is_valid_voice_id(voice):
                     raise ValueError(
-                        f"Unknown voice '{voice}'. Available: {', '.join(AVAILABLE_VOICES.keys())}"
+                        f"Invalid voice '{voice}'. Use a built-in ({', '.join(AVAILABLE_VOICES.keys())}) "
+                        f"or a custom cloned voice ID (8 lowercase alphanumeric characters)."
                     )
                 language = arguments.get("language", "en")
-                save_path = arguments.get("save_path") or get_audio_save_path("mp3")
+                audio_format = arguments.get("audio_format")
+                sample_rate = arguments.get("sample_rate")
+                bitrate = arguments.get("bitrate")
 
-                audio_bytes = call_grok_tts(text, voice, language)
+                extension = TTS_FORMAT_EXTENSIONS.get(audio_format or "mp3", "mp3")
+                save_path = arguments.get("save_path") or get_audio_save_path(extension)
+
+                audio_bytes = call_grok_tts(
+                    text, voice, language,
+                    audio_format=audio_format,
+                    sample_rate=sample_rate,
+                    bitrate=bitrate,
+                )
 
                 abs_path = os.path.abspath(save_path)
                 os.makedirs(os.path.dirname(abs_path), exist_ok=True)
                 with open(abs_path, "wb") as f:
                     f.write(audio_bytes)
 
+                voice_label = AVAILABLE_VOICES.get(voice, "custom cloned voice")
                 size_kb = len(audio_bytes) / 1024
                 return {
                     "jsonrpc": "2.0",
@@ -1753,7 +1988,7 @@ Provide specific, actionable feedback on:
                                 "type": "text",
                                 "text": (
                                     f"Audio saved to: {abs_path}\n"
-                                    f"Voice: {voice} ({AVAILABLE_VOICES[voice]})\n"
+                                    f"Voice: {voice} ({voice_label})\n"
                                     f"Language: {language}\n"
                                     f"Size: {size_kb:.1f} KB"
                                 ),
@@ -1766,14 +2001,22 @@ Provide specific, actionable feedback on:
             if not GROK_AVAILABLE:
                 result = f"Grok not available: {GROK_ERROR}"
             else:
-                audio_path = arguments.get("audio_path", "")
-                if not audio_path.strip():
-                    raise ValueError("audio_path cannot be empty")
+                audio_path = (arguments.get("audio_path") or "").strip() or None
+                audio_url = (arguments.get("audio_url") or "").strip() or None
+                if not audio_path and not audio_url:
+                    raise ValueError("Provide audio_path or audio_url")
 
-                language = arguments.get("language")
-                response_format = arguments.get("response_format")
-
-                stt_result = call_grok_stt(audio_path, language, response_format)
+                stt_result = call_grok_stt(
+                    audio_path=audio_path,
+                    audio_url=audio_url,
+                    language=arguments.get("language"),
+                    format=arguments.get("format"),
+                    diarize=arguments.get("diarize"),
+                    multichannel=arguments.get("multichannel"),
+                    channels=arguments.get("channels"),
+                    keyterm=arguments.get("keyterm"),
+                    filler_words=arguments.get("filler_words"),
+                )
 
                 # Surface a clean transcription up top, then the full payload
                 transcript = stt_result.get("text", "") if isinstance(stt_result, dict) else ""
@@ -1980,7 +2223,7 @@ if __name__ == "__main__":
         epilog="""
 Examples:
   python server.py                                       Run as MCP server
-  python server.py config --model grok-4-1-fast-reasoning  Set default model
+  python server.py config --model grok-4.3                 Set default model
   python server.py config --voice eve                    Set default TTS voice
   python server.py config --show                         Show current config
   python server.py config --list-models                  List available models

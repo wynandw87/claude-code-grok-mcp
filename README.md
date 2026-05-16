@@ -1,6 +1,6 @@
 # Claude Code + Grok MCP Server
 
-MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, vision analysis, **text-to-speech**, **speech-to-text**, and **multi-turn conversations**. Supports Grok 4.1, Aurora, Imagine, Voice, and Vision models.
+MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, video editing, vision analysis, **text-to-speech**, **speech-to-text**, and **multi-turn conversations**. Supports Grok 4.3, Grok 4.20, Imagine (image/video), and Voice models.
 
 ## Quick Start
 
@@ -114,7 +114,8 @@ Once installed, use trigger phrases to invoke Grok:
 | `grok upload file` | Upload File | "grok upload file at ./report.pdf" |
 | `grok generate image`, `grok image` | Generate Image | "grok generate image of a sunset over mountains" |
 | `grok edit image`, `grok modify image` | Edit Image | "grok edit image at ./photo.jpg to look like an oil painting" |
-| `grok generate video`, `grok video` | Generate Video | "grok generate a 5 second video of ocean waves" |
+| `grok generate video`, `grok video` | Generate Video | "grok generate an 8 second video of ocean waves" |
+| `grok edit video`, `grok modify video` | Edit Video | "grok edit ./clip.mp4 to change the sky to sunset" |
 | `grok analyze image`, `grok vision` | Analyze Image | "grok analyze image at ./screenshot.png" |
 | `grok speak`, `grok tts`, `grok say` | Text-to-Speech | "grok speak: welcome to the demo" |
 | `grok transcribe`, `grok stt` | Speech-to-Text | "grok transcribe ./meeting.mp3" |
@@ -134,6 +135,7 @@ Or ask naturally:
 - *"Grok generate an image of a futuristic city"*
 - *"Grok edit this image to add a sunset background"*
 - *"Grok generate a 10 second video of a drone flying over a forest"*
+- *"Grok edit this video to swap the red car for a blue one"*
 - *"Grok describe what's in this screenshot"*
 - *"Have Grok read this paragraph aloud and save it as an MP3"*
 - *"Grok transcribe this meeting recording with speaker labels"*
@@ -218,7 +220,7 @@ Generate images using Grok's image models.
 
 **Parameters:**
 - `prompt` (required) — description of the image to create
-- `model` (optional) — `"grok-imagine-image"` (default, $0.02/img), `"grok-2-image-1212"` ($0.07/img), or `"grok-imagine-image-pro"` ($0.07/img, higher quality)
+- `model` (optional) — `"grok-imagine-image"` (default, $0.02/img) or `"grok-imagine-image-quality"` ($0.05/img, higher quality)
 - `n` (optional, 1-10) — number of images to generate
 - `aspect_ratio` (optional) — `"1:1"`, `"16:9"`, `"9:16"`, `"4:3"`, `"3:4"`, `"3:2"`, `"2:3"`, `"2:1"`, `"1:2"`, `"19.5:9"`, `"9:19.5"`, `"20:9"`, `"9:20"`, `"auto"`
 - `resolution` (optional) — `"1k"` (~1024px) or `"2k"` (~2048px)
@@ -233,44 +235,59 @@ Edit existing images using natural language with Grok's Imagine models. Supports
 **Parameters:**
 - `prompt` (required) — description of the desired edits (e.g., "make it look like an oil painting", "add a sunset background")
 - `image_path` (required) — absolute path to the source image
-- `model` (optional) — `"grok-imagine-image"` (default, $0.02/img) or `"grok-imagine-image-pro"` ($0.07/img)
+- `model` (optional) — `"grok-imagine-image"` (default, $0.02/img) or `"grok-imagine-image-quality"` ($0.05/img)
 - `save_path` (optional) — where to save the edited image; auto-saves if omitted
 
 ## Video Generation
 
-Generate videos using Grok's Imagine video model. Supports three modes: text-to-video, image-to-video, and video editing. Video generation is async and may take 1-5 minutes.
+Generate videos using Grok's Imagine video model (`/v1/videos/generations`). Supports text-to-video and image-to-video. Video generation is async and may take 1-5 minutes.
 
 **Parameters:**
-- `prompt` (required) — description of the video to generate or editing instructions
-- `duration` (optional, 1-15) — video duration in seconds (default: 5). Not applicable for video editing.
+- `prompt` (required) — description of the video to generate
+- `duration` (optional, 1-15) — video duration in seconds (default: 8)
 - `aspect_ratio` (optional) — `"1:1"`, `"16:9"` (default), `"9:16"`, `"4:3"`, `"3:4"`, `"3:2"`, `"2:3"`
-- `resolution` (optional) — `"480p"` (default) or `"720p"`
+- `resolution` (optional) — `"480p"` (default), `"720p"`, or `"1080p"`
 - `image_path` (optional) — source image for image-to-video mode
-- `video_url` (optional) — source video URL for video editing mode (max 8.7s input)
 - `save_path` (optional) — where to save the video; auto-saves if omitted
+
+For editing an existing video, use the separate `edit_video` tool.
 
 Videos are saved to disk. The default save directory is `./generated-videos/`, configurable via the `GROK_VIDEO_OUTPUT_DIR` environment variable. Pricing is $0.05 per second of generated video.
 
+## Video Editing
+
+Apply natural-language edits to an existing MP4 (H.264 / H.265 / AV1) using `/v1/videos/edits`.
+
+**Parameters** (provide exactly one of `video_path`, `video_url`, or `file_id`):
+- `prompt` (required) — natural-language edit instructions (e.g. *"give the woman a silver necklace"*, *"change the background to a snowy mountain"*)
+- `video_path` — absolute path to a local MP4 (uploaded inline as base64)
+- `video_url` — public URL of the source MP4
+- `file_id` — xAI `file_id` of a previously uploaded video
+- `save_path` (optional) — where to save the edited video; auto-saves if omitted
+
 ## Image Analysis (Vision)
 
-Analyze images using Grok's vision capabilities. Uses your configured default model (grok-4+ models support vision natively).
+Analyze images using Grok's vision capabilities. Uses your configured default model (Grok 4.3 and 4.20 variants all support vision natively).
 
 **Parameters:**
 - `image_path` (required) — absolute path to the image file
 - `prompt` (optional) — question about the image (default: "Describe this image in detail")
-- `model` (optional) — vision model override: `"grok-2-vision-1212"`, `"grok-4-1-fast-reasoning"`, `"grok-4"`, etc.
+- `model` (optional) — vision model override: `"grok-4.3"`, `"grok-4.20-0309-reasoning"`, etc.
 
 ## Text-to-Speech
 
-Convert text to natural-sounding speech using Grok's TTS API. Supports inline speech tags for emotion (laughter, whispers, pauses) and 20+ languages. Pricing: $4.20 per 1M characters.
+Convert text to natural-sounding speech using Grok's TTS API. Supports inline speech tags for emotion (laughter, whispers, pauses) and 20+ languages. Pricing: $15.00 per 1M characters.
 
 **Parameters:**
 - `text` (required) — the text to synthesize
-- `voice` (optional) — overrides the default voice for this call (see voice list below)
+- `voice` (optional) — built-in voice ID (default: `eve`; see list below) or a custom cloned voice ID (8 lowercase alphanumeric chars)
 - `language` (optional) — language code (default: `"en"`)
-- `save_path` (optional) — where to save the MP3; auto-saves to `./generated-audio/` with a timestamp if omitted
+- `audio_format` (optional) — `mp3` (default), `wav`, `pcm`, `mulaw`, `alaw`
+- `sample_rate` (optional) — 8000, 16000, 22050, 24000 (default), 44100, or 48000 Hz
+- `bitrate` (optional, MP3 only) — 32, 64, 96, 128 (default), or 192 kbps
+- `save_path` (optional) — where to save the audio; auto-saves to `./generated-audio/` with a timestamp if omitted
 
-**Available voices:**
+**Built-in voices:**
 
 | Voice | Description |
 |-------|-------------|
@@ -280,18 +297,26 @@ Convert text to natural-sounding speech using Grok's TTS API. Supports inline sp
 | `rex` | Confident male |
 | `sal` | Neutral |
 
-The default voice is `eve`. To switch the default permanently, see [Changing the Default Voice](#changing-the-default-voice). To use a different voice for a single call, pass the `voice` parameter (e.g. *"grok speak with voice rex: ..."*).
+To switch the default voice permanently, see [Changing the Default Voice](#changing-the-default-voice). To override for a single call, pass `voice` (e.g. *"grok speak with voice rex: ..."*).
+
+**Custom cloned voices:** xAI supports voice cloning from a short reference clip. Create one via the [xAI Console](https://console.x.ai/) (free tier: up to 30 voices) or the `POST /v1/custom-voices` API (Enterprise plan). Custom voice IDs are 8-char lowercase alphanumeric (e.g. `nlbqfwie`) and can be passed to `text_to_speech` directly in place of a built-in voice. Currently US-only (excluding Illinois).
 
 ## Speech-to-Text
 
-Transcribe audio files using Grok's STT API. Supports 25 languages, word-level timestamps, and speaker diarization. Pricing: $0.10/hr (batch).
+Transcribe audio files using Grok's STT API (`/v1/stt`). Supports 24 languages, per-channel transcription, speaker diarization, and keyterm boosting. Pricing: $0.10/hr (REST), $0.20/hr (streaming).
 
-**Parameters:**
-- `audio_path` (required) — absolute path to the audio file
+**Parameters** (provide exactly one of `audio_path` or `audio_url`):
+- `audio_path` — absolute path to a local audio file
+- `audio_url` — public URL of the audio
 - `language` (optional) — ISO language code (e.g. `"en"`, `"es"`); auto-detected if omitted
-- `response_format` (optional) — `"json"` (default), `"text"`, `"verbose_json"` (timestamps + speakers), `"srt"`, or `"vtt"`
+- `format` (optional, bool) — apply text formatting (punctuation, casing)
+- `diarize` (optional, bool) — speaker diarization (per-speaker labels)
+- `multichannel` (optional, bool) — per-channel transcription
+- `channels` (optional, int) — channel count for raw/headerless audio
+- `keyterm` (optional, array of strings, max 100) — boost recognition for jargon / proper nouns
+- `filler_words` (optional, bool) — include "um", "uh", etc. in the transcript
 
-**Supported audio formats:** mp3, wav, flac, m4a, ogg, opus, aac, webm, mp4, mpga, mpeg, wma. Max 100MB per file.
+**Supported audio formats:** mp3, wav, flac, m4a, ogg, opus, aac, webm, mp4, mpga, mpeg, wma. Max 500MB per file.
 
 ---
 
@@ -309,7 +334,7 @@ Transcribe audio files using Grok's STT API. Supports 25 languages, word-level t
 
 ## Changing the Default Model
 
-The default model is `grok-4-1-fast-reasoning` (Grok 4.1 Fast with reasoning, 2M context window).
+The default model is `grok-4.3` (xAI's flagship, 1M context window).
 
 ### 1. See available models
 
@@ -329,34 +354,18 @@ python server.py config --list-models
 ```
 Available Grok models:
 --------------------------------------------------
-  grok-4-1-fast-reasoning *
-    Grok 4.1 Fast with reasoning (2M context) - Default
-  grok-4
-    Grok 4 flagship model
-  grok-4-1-fast-non-reasoning
-    Grok 4.1 Fast without reasoning (2M context)
-  grok-4-fast-reasoning
-    Grok 4 Fast with reasoning
-  grok-4-fast-non-reasoning
-    Grok 4 Fast without reasoning
-  grok-4-0709
-    Grok 4 (July 2025 release)
-  grok-3
-    Grok 3 - Previous flagship (128K context)
-  grok-3-mini
-    Grok 3 Mini - Lighter/cheaper option (128K context)
-  grok-2-1212
-    Grok 2 (128K context)
-  grok-2-vision-1212
-    Grok 2 Vision (32K context)
-  grok-code-fast-1
-    Grok Code Fast - Optimized for coding
-  grok-2-image-1212
-    Aurora image generation (text→image, $0.07/img)
+  grok-4.3 *
+    Grok 4.3 flagship (1M context, $1.25/$2.50 per 1M tokens) - Default
+  grok-4.20-0309-reasoning
+    Grok 4.20 with reasoning (1M context, $1.25/$2.50)
+  grok-4.20-0309-non-reasoning
+    Grok 4.20 without reasoning (1M context, $1.25/$2.50)
+  grok-4.20-multi-agent-0309
+    Grok 4.20 multi-agent (2M context, $1.25/$2.50)
   grok-imagine-image
     Imagine image gen + editing (text,image→image, $0.02/img)
-  grok-imagine-image-pro
-    Imagine Pro image gen + editing (higher quality, $0.07/img)
+  grok-imagine-image-quality
+    Imagine higher-quality image gen + editing ($0.05/img)
   grok-imagine-video
     Imagine video generation (text,image,video→video, $0.05/sec)
 
@@ -367,12 +376,12 @@ Available Grok models:
 
 **macOS / Linux:**
 ```text
-python3 server.py config --model grok-4-0709
+python3 server.py config --model grok-4.20-0309-reasoning
 ```
 
 **Windows:**
 ```text
-python server.py config --model grok-4-0709
+python server.py config --model grok-4.20-0309-reasoning
 ```
 
 ### 3. Restart Claude Code
@@ -492,22 +501,24 @@ This MCP server uses the xAI REST API directly to communicate with Grok models. 
 **Tools provided:**
 | Tool | API | Model |
 |------|-----|-------|
-| `ask` | Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `code_review` | Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `brainstorm` | Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `search_web` | Responses + web_search | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `search_x` | Responses + x_search | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `run_code` | Responses + code_interpreter | Configurable (default: `grok-4-1-fast-reasoning`) |
-| `upload_file` | Files + Responses | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `ask` | Responses | Configurable (default: `grok-4.3`) |
+| `code_review` | Responses | Configurable (default: `grok-4.3`) |
+| `brainstorm` | Responses | Configurable (default: `grok-4.3`) |
+| `search_web` | Responses + web_search | Configurable (default: `grok-4.3`) |
+| `search_x` | Responses + x_search | Configurable (default: `grok-4.3`) |
+| `run_code` | Responses + code_interpreter | Configurable (default: `grok-4.3`) |
+| `upload_file` | Files + Responses | Configurable (default: `grok-4.3`) |
 | `generate_image` | Image Generations | Configurable (default: `grok-imagine-image`) |
 | `edit_image` | Image Edits | Configurable (default: `grok-imagine-image`) |
-| `generate_video` | Video Generations | `grok-imagine-video` |
+| `generate_video` | Video Generations (`/v1/videos/generations`) | `grok-imagine-video` |
+| `edit_video` | Video Edits (`/v1/videos/edits`) | `grok-imagine-video` |
 | `analyze_image` | Chat Completions | Configurable (default: your configured model) |
 | `text_to_speech` | TTS (`/v1/tts`) | Grok Voice (configurable voice, default: `eve`) |
 | `speech_to_text` | STT (`/v1/stt`) | Grok Voice |
-| `chat` | Chat Completions | Configurable (default: `grok-4-1-fast-reasoning`) |
+| `chat` | Chat Completions | Configurable (default: `grok-4.3`) |
 | `list_sessions` | — (local) | — |
 | `end_session` | — (local) | — |
+| `server_info` | — (local) | — |
 
 ---
 

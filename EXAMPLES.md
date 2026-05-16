@@ -210,7 +210,7 @@ This creates a powerful AI pair programming experience where both models complem
 
 ## Why Grok?
 
-Grok models offer massive context windows (up to 2M tokens with `grok-4-1-fast-reasoning`), making them ideal for:
+Grok models offer massive context windows (up to 2M tokens with `grok-4.20-multi-agent-0309`, 1M with `grok-4.3`), making them ideal for:
 
 - Reviewing large codebases
 - Understanding complex system architectures
@@ -220,7 +220,7 @@ Grok models offer massive context windows (up to 2M tokens with `grok-4-1-fast-r
 - **Searching X/Twitter** for community discussions and trends
 - **Executing Python code** for calculations and data analysis
 - **Analyzing uploaded files** (PDFs, code, CSVs, etc.)
-- Generating images with Aurora
+- Generating images with the Imagine models
 - Analyzing images and screenshots with vision
 
 ## Text-to-Speech
@@ -252,14 +252,17 @@ python server.py config --voice rex
 # Force a language
 > grok transcribe ./call.wav (language=es)
 
-# Word-level timestamps and speaker diarization
-> grok stt ./interview.flac with response_format=verbose_json
+# Speaker diarization with formatting
+> grok stt ./interview.flac (diarize=true, format=true)
 
-# Generate subtitles
-> grok transcribe ./talk.mp4 with response_format=srt
+# Transcribe from a URL
+> grok transcribe (audio_url="https://example.com/talk.mp3")
+
+# Boost recognition of jargon / proper nouns
+> grok transcribe ./call.wav (keyterm=["Anthropic","Claude","MCP"])
 ```
 
-Supports mp3, wav, flac, m4a, ogg, opus, aac, webm, mp4, mpga, mpeg, wma (max 100MB).
+Supports mp3, wav, flac, m4a, ogg, opus, aac, webm, mp4, mpga, mpeg, wma (max 500MB).
 
 ## Model Selection
 
@@ -270,7 +273,7 @@ List available models and change the default:
 python server.py config --list-models
 
 # Set your preferred model
-python server.py config --model grok-4-0709
+python server.py config --model grok-4.20-0309-reasoning
 
 # Check current configuration
 python server.py config --show
@@ -282,15 +285,10 @@ Restart Claude Code after changing the model.
 
 | Model ID | Context | Description |
 |----------|---------|-------------|
-| `grok-4-1-fast-reasoning` | 2M | Grok 4.1 Fast with reasoning (Default) |
-| `grok-4` | 256K | Grok 4 flagship model |
-| `grok-4-1-fast-non-reasoning` | 2M | Grok 4.1 Fast without reasoning |
-| `grok-4-fast-reasoning` | — | Grok 4 Fast with reasoning |
-| `grok-4-fast-non-reasoning` | — | Grok 4 Fast without reasoning |
-| `grok-4-0709` | — | Grok 4 (July 2025 release) |
-| `grok-3` | 128K | Grok 3 - Previous flagship |
-| `grok-3-mini` | 128K | Grok 3 Mini - Lighter/cheaper |
-| `grok-2-1212` | 128K | Grok 2 |
-| `grok-2-vision-1212` | 32K | Grok 2 Vision (used by `analyze_image`) |
-| `grok-code-fast-1` | — | Grok Code Fast - Optimized for coding |
-| `grok-2-image` | — | Aurora image generation (used by `generate_image`) |
+| `grok-4.3` | 1M | Grok 4.3 flagship (Default) — $1.25/$2.50 per 1M tokens |
+| `grok-4.20-0309-reasoning` | 1M | Grok 4.20 with reasoning |
+| `grok-4.20-0309-non-reasoning` | 1M | Grok 4.20 without reasoning |
+| `grok-4.20-multi-agent-0309` | 2M | Grok 4.20 multi-agent |
+| `grok-imagine-image` | — | Imagine image gen + editing ($0.02/img) |
+| `grok-imagine-image-quality` | — | Imagine higher-quality image gen + editing ($0.05/img) |
+| `grok-imagine-video` | — | Imagine video generation ($0.05/sec) |
