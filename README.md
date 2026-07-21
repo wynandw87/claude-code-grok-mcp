@@ -1,6 +1,6 @@
 # Claude Code + Grok MCP Server
 
-MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, video editing, vision analysis, **text-to-speech**, **speech-to-text**, and **multi-turn conversations**. Supports Grok 4.3, Grok 4.20, Imagine (image/video), and Voice models.
+MCP server that brings xAI's Grok to Claude Code — text generation, brainstorming, code review, web search, X/Twitter search, code execution, file analysis, image generation, image editing, video generation, video editing, vision analysis, **text-to-speech**, **speech-to-text**, and **multi-turn conversations**. Supports Grok 4.5 (default), Grok 4.3, Grok 4.20, Grok Build, Imagine (image/video), and Voice models.
 
 ## Quick Start
 
@@ -267,12 +267,12 @@ Apply natural-language edits to an existing MP4 (H.264 / H.265 / AV1) using `/v1
 
 ## Image Analysis (Vision)
 
-Analyze images using Grok's vision capabilities. Uses your configured default model (Grok 4.3 and 4.20 variants all support vision natively).
+Analyze images using Grok's vision capabilities. Uses your configured default model (Grok 4.5, 4.3 and the 4.20 variants all support vision natively).
 
 **Parameters:**
 - `image_path` (required) — absolute path to the image file
 - `prompt` (optional) — question about the image (default: "Describe this image in detail")
-- `model` (optional) — vision model override: `"grok-4.3"`, `"grok-4.20-0309-reasoning"`, etc.
+- `model` (optional) — vision model override: `"grok-4.5"`, `"grok-4.3"`, `"grok-4.20-0309-reasoning"`, etc.
 
 ## Text-to-Speech
 
@@ -332,9 +332,23 @@ Transcribe audio files using Grok's STT API (`/v1/stt`). Supports 24 languages, 
 
 ---
 
+## Reliability Behavior
+
+**File safety.** Tools that write output (`generate_image`, `edit_image`, `generate_video`, `edit_video`, `text_to_speech`) never overwrite an existing file. Pass `overwrite: true` to replace one. Writes are atomic — an interrupted write leaves the original file untouched rather than a truncated one.
+
+**Input validation.** Files you pass in (`image_path`, `video_path`, `audio_path`, `file_path`) are checked for extension and size before being read and sent to xAI. Images are capped at 20MB (`.jpg/.jpeg/.png/.gif/.webp/.bmp`), source videos at 100MB (`.mp4`), audio at 500MB, uploads at 48MB.
+
+**Retries.** HTTP 429 and 503 are retried up to 3 times with exponential backoff, honoring `Retry-After`. Ambiguous 5xx responses are retried only on read-only requests (status polls, downloads) — never on generation calls, where a duplicate request could bill you twice.
+
+**Cancellation.** Video generation and editing poll for up to 10 minutes. Cancelling the request in Claude Code stops the poll within about a second, and the server sends no response for a cancelled request. The job itself continues on xAI's side and is still billed — the `request_id` is logged to stderr so you can retrieve it. On Windows, cancellation is not detected mid-poll and the call runs to completion or timeout.
+
+**Recoverability.** Every video error message includes the `request_id`, so a job that outlives the poll timeout can still be fetched manually from the xAI API.
+
+---
+
 ## Changing the Default Model
 
-The default model is `grok-4.3` (xAI's flagship, 1M context window).
+The default model is `grok-4.5` (xAI's flagship, 500k context window).
 
 ### 1. See available models
 
@@ -354,20 +368,26 @@ python server.py config --list-models
 ```
 Available Grok models:
 --------------------------------------------------
-  grok-4.3 *
-    Grok 4.3 flagship (1M context, $1.25/$2.50 per 1M tokens) - Default
+  grok-4.5 *
+    Grok 4.5 flagship (500k context, $2/$6 per 1M tokens) - Default
+  grok-4.3
+    Grok 4.3 (1M context, $1.25/$2.50 per 1M tokens)
   grok-4.20-0309-reasoning
     Grok 4.20 with reasoning (1M context, $1.25/$2.50)
   grok-4.20-0309-non-reasoning
     Grok 4.20 without reasoning (1M context, $1.25/$2.50)
   grok-4.20-multi-agent-0309
     Grok 4.20 multi-agent (2M context, $1.25/$2.50)
+  grok-build-0.1
+    Grok Build 0.1 coding model (256k context, $1/$2)
   grok-imagine-image
     Imagine image gen + editing (text,image→image, $0.02/img)
   grok-imagine-image-quality
     Imagine higher-quality image gen + editing ($0.05/img)
   grok-imagine-video
     Imagine video generation (text,image,video→video, $0.05/sec)
+  grok-imagine-video-1.5
+    Imagine video 1.5 (image→video ONLY - no text-to-video, no editing; $0.08/sec)
 
 * = currently selected
 ```
@@ -501,21 +521,21 @@ This MCP server uses the xAI REST API directly to communicate with Grok models. 
 **Tools provided:**
 | Tool | API | Model |
 |------|-----|-------|
-| `ask` | Responses | Configurable (default: `grok-4.3`) |
-| `code_review` | Responses | Configurable (default: `grok-4.3`) |
-| `brainstorm` | Responses | Configurable (default: `grok-4.3`) |
-| `search_web` | Responses + web_search | Configurable (default: `grok-4.3`) |
-| `search_x` | Responses + x_search | Configurable (default: `grok-4.3`) |
-| `run_code` | Responses + code_interpreter | Configurable (default: `grok-4.3`) |
-| `upload_file` | Files + Responses | Configurable (default: `grok-4.3`) |
+| `ask` | Responses | Configurable (default: `grok-4.5`) |
+| `code_review` | Responses | Configurable (default: `grok-4.5`) |
+| `brainstorm` | Responses | Configurable (default: `grok-4.5`) |
+| `search_web` | Responses + web_search | Configurable (default: `grok-4.5`) |
+| `search_x` | Responses + x_search | Configurable (default: `grok-4.5`) |
+| `run_code` | Responses + code_interpreter | Configurable (default: `grok-4.5`) |
+| `upload_file` | Files + Responses | Configurable (default: `grok-4.5`) |
 | `generate_image` | Image Generations | Configurable (default: `grok-imagine-image`) |
 | `edit_image` | Image Edits | Configurable (default: `grok-imagine-image`) |
-| `generate_video` | Video Generations (`/v1/videos/generations`) | `grok-imagine-video` |
-| `edit_video` | Video Edits (`/v1/videos/edits`) | `grok-imagine-video` |
+| `generate_video` | Video Generations (`/v1/videos/generations`) | Configurable (default: `grok-imagine-video`) |
+| `edit_video` | Video Edits (`/v1/videos/edits`) | Configurable (default: `grok-imagine-video`) |
 | `analyze_image` | Chat Completions | Configurable (default: your configured model) |
 | `text_to_speech` | TTS (`/v1/tts`) | Grok Voice (configurable voice, default: `eve`) |
 | `speech_to_text` | STT (`/v1/stt`) | Grok Voice |
-| `chat` | Chat Completions | Configurable (default: `grok-4.3`) |
+| `chat` | Chat Completions | Configurable (default: `grok-4.5`) |
 | `list_sessions` | — (local) | — |
 | `end_session` | — (local) | — |
 | `server_info` | — (local) | — |
@@ -525,6 +545,16 @@ This MCP server uses the xAI REST API directly to communicate with Grok models. 
 ## Contributing
 
 Pull requests welcome! Please keep it simple and beginner-friendly.
+
+## Tests
+
+```bash
+python3 test_server.py
+```
+
+Covers input validation, overwrite protection, atomic writes, model-config fallback, retry/backoff, session windowing and eviction, and cancellation handling. No network access or API key required — all HTTP is stubbed.
+
+---
 
 ## License
 

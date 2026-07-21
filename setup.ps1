@@ -81,4 +81,4 @@ Write-Host "  - analyze_image    - Image analysis (vision)" -ForegroundColor Gra
 Write-Host ""
 Write-Host "To change the default model, run:" -ForegroundColor Gray
 Write-Host "  python $serverPath config --list-models" -ForegroundColor Gray
-Write-Host "  python $serverPath config --model grok-4-0709" -ForegroundColor Gray
+Write-Host "  python $serverPath config --model grok-4.5" -ForegroundColor Gray

@@ -285,10 +285,13 @@ Restart Claude Code after changing the model.
 
 | Model ID | Context | Description |
 |----------|---------|-------------|
-| `grok-4.3` | 1M | Grok 4.3 flagship (Default) — $1.25/$2.50 per 1M tokens |
+| `grok-4.5` | 500k | Grok 4.5 flagship (Default) — $2/$6 per 1M tokens |
+| `grok-4.3` | 1M | Grok 4.3 — $1.25/$2.50 per 1M tokens |
 | `grok-4.20-0309-reasoning` | 1M | Grok 4.20 with reasoning |
 | `grok-4.20-0309-non-reasoning` | 1M | Grok 4.20 without reasoning |
 | `grok-4.20-multi-agent-0309` | 2M | Grok 4.20 multi-agent |
+| `grok-build-0.1` | 256k | Grok Build 0.1 coding model — $1/$2 per 1M tokens |
 | `grok-imagine-image` | — | Imagine image gen + editing ($0.02/img) |
 | `grok-imagine-image-quality` | — | Imagine higher-quality image gen + editing ($0.05/img) |
 | `grok-imagine-video` | — | Imagine video generation ($0.05/sec) |
+| `grok-imagine-video-1.5` | — | Imagine video 1.5 — **image-to-video only** (no text-to-video, no editing), higher quality ($0.08/sec) |

@@ -5,7 +5,7 @@ Enables Claude Code to collaborate with xAI's Grok AI
 
 Usage:
   As MCP server (default):  python server.py
-  Configure model:          python server.py config --model grok-4.3
+  Configure model:          python server.py config --model grok-4.5
   Configure voice:          python server.py config --voice eve
   Show current config:      python server.py config --show
   List available models:    python server.py config --list-models
@@ -22,12 +22,13 @@ import logging
 import time
 import uuid
 import requests
+import select
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 # Server version
-__version__ = "3.6.0"
+__version__ = "3.9.2"
 
 # xAI API endpoints
 XAI_CHAT_API_URL = "https://api.x.ai/v1/chat/completions"
@@ -102,18 +103,55 @@ SUPPORTED_FILE_EXTENSIONS = {
     ".pdf", ".log", ".sql", ".r", ".swift", ".kt", ".scala", ".lua",
 }
 
-# Available Grok models (from xAI API, current as of 2026-05-16)
+# Image input limits (vision, image editing, image-to-video)
+MAX_IMAGE_SIZE_MB = 20
+SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+
+# Video input limits (video editing)
+MAX_VIDEO_SIZE_MB = 100
+SUPPORTED_VIDEO_EXTENSIONS = {".mp4"}
+
+# TTS input limit (xAI bills per character; keep requests sane)
+MAX_TTS_TEXT_LENGTH = 10000
+
+# Session limits
+MAX_SESSIONS = 50            # LRU-evict beyond this many live sessions
+MAX_SESSION_MESSAGES = 40    # sliding window of messages sent per turn
+
+# Available Grok models (from xAI API, current as of 2026-07-21)
 AVAILABLE_MODELS = {
-    "grok-4.3": "Grok 4.3 flagship (1M context, $1.25/$2.50 per 1M tokens) - Default",
+    "grok-4.5": "Grok 4.5 flagship (500k context, $2/$6 per 1M tokens) - Default",
+    "grok-4.3": "Grok 4.3 (1M context, $1.25/$2.50 per 1M tokens)",
     "grok-4.20-0309-reasoning": "Grok 4.20 with reasoning (1M context, $1.25/$2.50)",
     "grok-4.20-0309-non-reasoning": "Grok 4.20 without reasoning (1M context, $1.25/$2.50)",
     "grok-4.20-multi-agent-0309": "Grok 4.20 multi-agent (2M context, $1.25/$2.50)",
+    "grok-build-0.1": "Grok Build 0.1 coding model (256k context, $1/$2)",
     # Image generation models
     "grok-imagine-image": "Imagine image gen + editing (text,image→image, $0.02/img)",
     "grok-imagine-image-quality": "Imagine higher-quality image gen + editing ($0.05/img)",
-    # Video generation model
+    # Video generation models
     "grok-imagine-video": "Imagine video generation (text,image,video→video, $0.05/sec)",
+    "grok-imagine-video-1.5": "Imagine video 1.5 (image→video ONLY - no text-to-video, no editing; $0.08/sec)",
 }
+
+# Models that can be used for chat/vision (excludes image + video models)
+TEXT_MODELS = [
+    "grok-4.5",
+    "grok-4.3",
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-0309",
+    "grok-build-0.1",
+]
+
+# Video generation models
+VIDEO_MODELS = ["grok-imagine-video", "grok-imagine-video-1.5"]
+DEFAULT_VIDEO_MODEL = "grok-imagine-video"
+# grok-imagine-video-1.5 accepts image-to-video only: the API rejects both
+# text-to-video and video editing for it (verified against /v1/videos/*).
+IMAGE_TO_VIDEO_ONLY_MODELS = {"grok-imagine-video-1.5"}
+# Models usable with /v1/videos/edits
+VIDEO_EDIT_MODELS = [m for m in VIDEO_MODELS if m not in IMAGE_TO_VIDEO_ONLY_MODELS]
 
 # Config file location
 def get_config_path() -> Path:
@@ -147,12 +185,29 @@ def save_config(config: Dict[str, Any]) -> bool:
         print(f"Error saving config: {e}", file=sys.stderr)
         return False
 
+DEFAULT_MODEL_FALLBACK = "grok-4.5"
+
 def get_default_model() -> str:
-    """Get the default model from config file or use fallback"""
+    """Get the default model from config file or use fallback.
+
+    A config file holding a retired or non-text model would otherwise poison
+    every chat/vision call with an opaque API error, so validate it here the
+    same way get_default_voice() validates voices.
+    """
     config = load_config()
-    if "model" in config:
-        return config["model"]
-    return "grok-4.3"
+    configured = config.get("model")
+    if configured in TEXT_MODELS:
+        return configured
+    if configured is not None:
+        # Runs at import time, before the logger global exists - stderr is the
+        # only safe channel here (stdout carries JSON-RPC).
+        print(
+            f"Warning: configured model '{configured}' is not a valid text model; "
+            f"falling back to {DEFAULT_MODEL_FALLBACK}. "
+            f"Run 'python server.py config --model <model>' to update it.",
+            file=sys.stderr,
+        )
+    return DEFAULT_MODEL_FALLBACK
 
 def get_default_voice() -> str:
     """Get the default TTS voice from config file or use fallback"""
@@ -199,9 +254,16 @@ def handle_config_command(args) -> int:
         return 0
 
     if args.model:
-        if args.model not in AVAILABLE_MODELS:
-            print(f"Error: Unknown model '{args.model}'", file=sys.stderr)
-            print(f"Run 'python server.py config --list-models' to see available models", file=sys.stderr)
+        if args.model not in TEXT_MODELS:
+            if args.model in AVAILABLE_MODELS:
+                print(
+                    f"Error: '{args.model}' is an image/video model and cannot be the "
+                    f"default chat model. Choose one of: {', '.join(TEXT_MODELS)}",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"Error: Unknown model '{args.model}'", file=sys.stderr)
+                print(f"Run 'python server.py config --list-models' to see available models", file=sys.stderr)
             return 1
 
         config = load_config()
@@ -273,6 +335,26 @@ def prune_expired_sessions():
             logger.info(f"Session {sid} expired (model={sessions[sid]['model']})")
         del sessions[sid]
 
+def evict_sessions_over_limit():
+    """Drop least-recently-active sessions once MAX_SESSIONS is exceeded."""
+    while len(sessions) > MAX_SESSIONS:
+        oldest = min(sessions, key=lambda sid: sessions[sid]["last_active"])
+        if logger:
+            logger.info(f"Session {oldest} evicted (session limit {MAX_SESSIONS} reached)")
+        del sessions[oldest]
+
+def window_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return the messages to send: any system prompt plus the most recent turns.
+
+    Session history is otherwise re-sent in full every turn, so cost grows
+    quadratically and a long session eventually exceeds the context window.
+    """
+    if len(messages) <= MAX_SESSION_MESSAGES:
+        return messages
+    system = [m for m in messages[:1] if m["role"] == "system"]
+    recent = messages[-(MAX_SESSION_MESSAGES - len(system)):]
+    return system + recent
+
 # Graceful shutdown flag
 shutdown_requested = False
 logger = None
@@ -280,12 +362,67 @@ logger = None
 # API key storage
 API_KEY = None
 
+class ShutdownRequested(Exception):
+    """Raised from the signal handler to interrupt a blocked stdin read."""
+
+class RequestCancelled(Exception):
+    """Raised when the client cancels a long-running request mid-flight."""
+
+# Messages read off stdin while waiting on a long job, replayed by the main loop.
+pending_stdin_lines: List[str] = []
+
+def _stdin_has_data() -> bool:
+    """True if stdin has a line waiting. POSIX only; returns False elsewhere."""
+    if os.name != "posix":
+        return False
+    try:
+        readable, _, _ = select.select([sys.stdin], [], [], 0)
+        return bool(readable)
+    except Exception:
+        return False
+
+def check_for_cancellation(target_request_id: Any) -> bool:
+    """Drain stdin without blocking, looking for a cancel of target_request_id.
+
+    Unrelated messages are buffered for the main loop rather than dropped. On
+    Windows this is a no-op (select() can't watch a pipe), so cancellation
+    there still waits for the poll timeout.
+    """
+    cancelled = False
+    while _stdin_has_data():
+        line = sys.stdin.readline()
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            pending_stdin_lines.append(line)
+            continue
+        if (
+            isinstance(message, dict)
+            and message.get("method") == "notifications/cancelled"
+            and (message.get("params") or {}).get("requestId") == target_request_id
+        ):
+            cancelled = True
+            continue
+        pending_stdin_lines.append(line)
+    return cancelled
+
 def handle_shutdown(signum, frame):
-    """Handle shutdown signals gracefully"""
+    """Handle shutdown signals gracefully.
+
+    Raises rather than only setting a flag: per PEP 475 a blocking
+    sys.stdin.readline() is transparently retried after a signal, so a flag
+    alone would leave the process stuck until EOF.
+    """
     global shutdown_requested
     if logger:
         logger.info(f"Received signal {signum}, shutting down gracefully...")
     shutdown_requested = True
+    raise ShutdownRequested()
 
 # Initialize Grok
 GROK_AVAILABLE = False
@@ -325,6 +462,76 @@ def truncate_input(text: str, max_length: int, field_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Responses API helpers
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HTTP with retry
+# ---------------------------------------------------------------------------
+
+# 429 and 503 mean the request was NOT processed, so retrying is safe and
+# cannot double-charge. Ambiguous 5xx responses are only retried on read-only
+# GETs, where a duplicate request has no billing side effect.
+RETRY_STATUSES_WRITE = {429, 503}
+RETRY_STATUSES_READ = {429, 500, 502, 503, 504}
+MAX_API_RETRIES = 3
+RETRY_BASE_DELAY = 2  # seconds; doubled per attempt
+
+def _retry_delay(response: Optional[Any], attempt: int) -> float:
+    """Honour Retry-After when present, else exponential backoff."""
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return min(float(retry_after), 60.0)
+            except ValueError:
+                pass
+    return RETRY_BASE_DELAY * (2 ** attempt)
+
+def request_with_retry(
+    method: str,
+    url: str,
+    *,
+    retry_statuses: Optional[set] = None,
+    max_retries: int = MAX_API_RETRIES,
+    rewind: Optional[Any] = None,
+    **kwargs,
+) -> Any:
+    """requests.request with bounded retry on transient failures.
+
+    `rewind` is called before each retry so multipart uploads can seek their
+    file handles back to the start (a consumed handle would otherwise resend
+    an empty body).
+    """
+    if retry_statuses is None:
+        retry_statuses = RETRY_STATUSES_READ if method.upper() == "GET" else RETRY_STATUSES_WRITE
+
+    last_error = ""
+    for attempt in range(max_retries + 1):
+        if attempt > 0 and rewind is not None:
+            rewind()
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.RequestException as e:
+            last_error = f"{type(e).__name__}: {e}"
+            if attempt >= max_retries:
+                raise RuntimeError(
+                    f"Request to {url} failed after {attempt + 1} attempts - {last_error}"
+                )
+            delay = _retry_delay(None, attempt)
+        else:
+            if response.status_code not in retry_statuses or attempt >= max_retries:
+                return response
+            last_error = f"HTTP {response.status_code}"
+            delay = _retry_delay(response, attempt)
+
+        if logger:
+            logger.warning(
+                f"{last_error} from {url}, retrying in {delay:.0f}s "
+                f"(attempt {attempt + 2}/{max_retries + 1})"
+            )
+        time.sleep(delay)
+
+    # Unreachable: the loop either returns or raises.
+    raise RuntimeError(f"Request to {url} failed - {last_error}")
 
 def build_tool_spec(tool_type: str, **kwargs) -> Dict[str, Any]:
     """Build a server-side tool specification for the Responses API."""
@@ -410,7 +617,8 @@ def call_grok_responses(
         if any(t.get("type") in search_types for t in tools):
             payload["inline_citations"] = True
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_RESPONSES_API_URL,
         json=payload,
         headers={
@@ -438,7 +646,8 @@ def call_grok_chat(
         "temperature": 0.7,
     }
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_CHAT_API_URL,
         json=payload,
         headers={
@@ -479,12 +688,14 @@ def upload_file_to_xai(file_path: str) -> Dict[str, Any]:
     filename = os.path.basename(abs_path)
 
     with open(abs_path, "rb") as f:
-        response = requests.post(
+        response = request_with_retry(
+            "POST",
             XAI_FILES_API_URL,
             files={"file": (filename, f)},
             data={"purpose": "assistants"},
             headers={"Authorization": f"Bearer {API_KEY}"},
             timeout=TIMEOUT_UPLOAD,
+            rewind=lambda: f.seek(0),
         )
 
     if response.status_code != 200:
@@ -500,15 +711,79 @@ def upload_file_to_xai(file_path: str) -> Dict[str, Any]:
 # Image and vision helpers (unchanged endpoints)
 # ---------------------------------------------------------------------------
 
+IMAGE_MIME_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif",
+    ".webp": "image/webp", ".bmp": "image/bmp",
+}
+
 def get_mime_type(file_path: str) -> str:
-    """Detect MIME type from file extension"""
+    """Detect MIME type from file extension.
+
+    Raises on unknown extensions rather than mislabelling arbitrary bytes as
+    image/jpeg, which would let any local file be uploaded as an "image".
+    """
     ext = Path(file_path).suffix.lower()
-    mime_map = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png", ".gif": "image/gif",
-        ".webp": "image/webp", ".bmp": "image/bmp",
-    }
-    return mime_map.get(ext, "image/jpeg")
+    if ext not in IMAGE_MIME_TYPES:
+        raise ValueError(
+            f"Unsupported image type: {ext or '(no extension)'}. "
+            f"Supported: {', '.join(sorted(SUPPORTED_IMAGE_EXTENSIONS))}"
+        )
+    return IMAGE_MIME_TYPES[ext]
+
+def _validate_input_path(
+    file_path: str, extensions: set, max_size_mb: int, kind: str
+) -> str:
+    """Shared validation for local files read and sent to xAI."""
+    abs_path = os.path.abspath(file_path)
+    if not os.path.isfile(abs_path):
+        raise ValueError(f"File not found: {abs_path}")
+    ext = Path(abs_path).suffix.lower()
+    if ext not in extensions:
+        raise ValueError(
+            f"Unsupported {kind} type: {ext or '(no extension)'}. "
+            f"Supported: {', '.join(sorted(extensions))}"
+        )
+    size_mb = os.path.getsize(abs_path) / (1024 * 1024)
+    if size_mb > max_size_mb:
+        raise ValueError(f"{kind.capitalize()} file too large: {size_mb:.1f}MB (max {max_size_mb}MB)")
+    return abs_path
+
+def validate_image_path(file_path: str) -> str:
+    """Validate an image that will be read and sent to xAI. Returns absolute path."""
+    return _validate_input_path(file_path, SUPPORTED_IMAGE_EXTENSIONS, MAX_IMAGE_SIZE_MB, "image")
+
+def validate_video_path(file_path: str) -> str:
+    """Validate a video that will be read and sent to xAI. Returns absolute path."""
+    return _validate_input_path(file_path, SUPPORTED_VIDEO_EXTENSIONS, MAX_VIDEO_SIZE_MB, "video")
+
+def resolve_save_path(save_path: str, overwrite: bool = False) -> str:
+    """Resolve an output path, refusing to clobber an existing file by default."""
+    abs_path = os.path.abspath(save_path)
+    if os.path.exists(abs_path) and not overwrite:
+        raise ValueError(
+            f"Refusing to overwrite existing file: {abs_path}. "
+            f"Pass overwrite=true to replace it, or choose a different save_path."
+        )
+    return abs_path
+
+def write_file_atomic(abs_path: str, data: bytes) -> str:
+    """Write bytes via a temp file + rename so a failure never leaves a partial file."""
+    parent = os.path.dirname(abs_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = f"{abs_path}.{os.getpid()}.partial"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+        os.replace(tmp_path, abs_path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+    return abs_path
 
 def get_auto_save_path(index: int = 0) -> str:
     """Generate an auto-save path with timestamp"""
@@ -517,13 +792,10 @@ def get_auto_save_path(index: int = 0) -> str:
     suffix = f"_{index}" if index > 0 else ""
     return os.path.join(OUTPUT_DIR, f"grok_{timestamp}{suffix}.jpg")
 
-def save_image(b64_data: str, save_path: str) -> str:
+def save_image(b64_data: str, save_path: str, overwrite: bool = False) -> str:
     """Decode base64 image data and save to disk. Returns the absolute path."""
-    abs_path = os.path.abspath(save_path)
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    with open(abs_path, "wb") as f:
-        f.write(base64.b64decode(b64_data))
-    return abs_path
+    abs_path = resolve_save_path(save_path, overwrite)
+    return write_file_atomic(abs_path, base64.b64decode(b64_data))
 
 def call_grok_image_gen(
     prompt: str,
@@ -544,7 +816,8 @@ def call_grok_image_gen(
     if resolution:
         payload["resolution"] = resolution
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_IMAGE_API_URL,
         json=payload,
         headers={
@@ -587,7 +860,8 @@ def call_grok_image_edit(
         "response_format": "b64_json",
     }
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_IMAGE_EDIT_API_URL,
         json=payload,
         headers={
@@ -631,7 +905,8 @@ def call_grok_vision(image_base64: str, mime_type: str, prompt: str, model: Opti
         "temperature": 0.7,
     }
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_CHAT_API_URL,
         json=payload,
         headers={
@@ -665,14 +940,21 @@ def call_grok_video_gen(
     aspect_ratio: Optional[str] = None,
     resolution: Optional[str] = None,
     image_path: Optional[str] = None,
+    model: str = DEFAULT_VIDEO_MODEL,
 ) -> str:
     """Submit a video generation request to /v1/videos/generations.
 
     Returns request_id for polling. Supports text-to-video and image-to-video.
     For video editing, use call_grok_video_edit instead.
     """
+    if model in IMAGE_TO_VIDEO_ONLY_MODELS and not image_path:
+        raise ValueError(
+            f"{model} supports image-to-video only. Provide image_path, "
+            f"or use {DEFAULT_VIDEO_MODEL} for text-to-video."
+        )
+
     payload: Dict[str, Any] = {
-        "model": "grok-imagine-video",
+        "model": model,
         "prompt": prompt,
     }
     if duration is not None:
@@ -684,12 +966,14 @@ def call_grok_video_gen(
 
     # Image-to-video: read image and send as base64 data URI inside `image` object
     if image_path:
-        with open(image_path, "rb") as f:
+        abs_image = validate_image_path(image_path)
+        mime = get_mime_type(abs_image)
+        with open(abs_image, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode("utf-8")
-        mime = get_mime_type(image_path)
         payload["image"] = {"url": f"data:{mime};base64,{img_b64}"}
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_VIDEO_API_URL,
         json=payload,
         headers={
@@ -713,18 +997,26 @@ def call_grok_video_edit(
     video_url: Optional[str] = None,
     video_path: Optional[str] = None,
     file_id: Optional[str] = None,
+    model: str = DEFAULT_VIDEO_MODEL,
 ) -> str:
     """Submit a video edit request to /v1/videos/edits.
 
     Exactly one of video_url, video_path, or file_id must be provided.
     Source must be .mp4 (H.264 / H.265 / AV1). Returns request_id for polling.
     """
+    if model in IMAGE_TO_VIDEO_ONLY_MODELS:
+        raise ValueError(
+            f"{model} supports image-to-video only and cannot edit video. "
+            f"Use {DEFAULT_VIDEO_MODEL} for editing."
+        )
+
     sources = sum(1 for v in (video_url, video_path, file_id) if v)
     if sources != 1:
         raise ValueError("Provide exactly one of: video_url, video_path, file_id")
 
     if video_path:
-        with open(video_path, "rb") as f:
+        abs_video = validate_video_path(video_path)
+        with open(abs_video, "rb") as f:
             vid_b64 = base64.b64encode(f.read()).decode("utf-8")
         video_ref: Dict[str, str] = {"url": f"data:video/mp4;base64,{vid_b64}"}
     elif video_url:
@@ -733,12 +1025,13 @@ def call_grok_video_edit(
         video_ref = {"file_id": file_id}  # type: ignore[dict-item]
 
     payload: Dict[str, Any] = {
-        "model": "grok-imagine-video",
+        "model": model,
         "prompt": prompt,
         "video": video_ref,
     }
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_VIDEO_EDIT_API_URL,
         json=payload,
         headers={
@@ -757,54 +1050,117 @@ def call_grok_video_edit(
         raise RuntimeError(f"Video edit returned no request_id: {result}")
     return request_id
 
-def poll_video_status(request_id: str) -> Dict[str, Any]:
-    """Poll for video completion. Returns video result when done."""
+def poll_video_status(request_id: str, cancel_check: Optional[Any] = None) -> Dict[str, Any]:
+    """Poll for video completion. Returns video result when done.
+
+    The job is already running (and already billed) on xAI's side, so transient
+    poll failures retry instead of abandoning it. Every error carries the
+    request_id so an abandoned job can still be retrieved manually.
+    """
     poll_url = f"https://api.x.ai/v1/videos/{request_id}"
     start = time.time()
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+
+    def _sleep(seconds: float):
+        """Sleep in slices so a cancellation is noticed promptly."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if cancel_check is not None and cancel_check():
+                raise RequestCancelled(
+                    f"Video job cancelled by client (request_id: {request_id})"
+                )
+            time.sleep(min(1.0, max(0.0, deadline - time.time())))
 
     while time.time() - start < VIDEO_POLL_TIMEOUT:
-        response = requests.get(
-            poll_url,
-            headers={"Authorization": f"Bearer {API_KEY}"},
-            timeout=60,
-        )
+        if cancel_check is not None and cancel_check():
+            raise RequestCancelled(
+                f"Video job cancelled by client (request_id: {request_id})"
+            )
+        try:
+            response = requests.get(
+                poll_url,
+                headers={"Authorization": f"Bearer {API_KEY}"},
+                timeout=60,
+            )
+        except requests.RequestException as e:
+            consecutive_errors += 1
+            if consecutive_errors >= max_consecutive_errors:
+                raise RuntimeError(
+                    f"Video poll failed {consecutive_errors}x in a row ({e}). "
+                    f"The job may still complete - request_id: {request_id}"
+                )
+            _sleep(VIDEO_POLL_INTERVAL * consecutive_errors)
+            continue
+
+        # Rate limits and server-side blips are transient: back off and retry
+        # rather than abandoning a job the user has already paid for.
+        if response.status_code == 429 or response.status_code >= 500:
+            consecutive_errors += 1
+            if consecutive_errors >= max_consecutive_errors:
+                raise RuntimeError(
+                    f"Video poll failed {consecutive_errors}x in a row "
+                    f"(HTTP {response.status_code}). The job may still complete - "
+                    f"request_id: {request_id}"
+                )
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = int(retry_after) if retry_after else VIDEO_POLL_INTERVAL * consecutive_errors
+            except ValueError:
+                delay = VIDEO_POLL_INTERVAL * consecutive_errors
+            if logger:
+                logger.warning(
+                    f"Video poll got HTTP {response.status_code}, retrying in {delay}s "
+                    f"(request_id: {request_id})"
+                )
+            _sleep(delay)
+            continue
 
         # The xAI API returns HTTP 202 (with {"status":"pending"}) while the job
         # is in flight, and HTTP 200 once it's done. Treat both as pollable.
         if response.status_code not in (200, 202):
-            raise RuntimeError(f"Video poll failed (HTTP {response.status_code}): {response.text}")
+            raise RuntimeError(
+                f"Video poll failed (HTTP {response.status_code}): {response.text} "
+                f"(request_id: {request_id})"
+            )
 
+        consecutive_errors = 0
         result = response.json()
         status = result.get("status", "")
 
         if status == "done":
             return result
         elif status in ("expired", "failed"):
-            raise RuntimeError(f"Video generation {status}: {result.get('error', result)}")
+            raise RuntimeError(
+                f"Video generation {status}: {result.get('error', result)} "
+                f"(request_id: {request_id})"
+            )
         elif status == "pending":
             if logger:
                 elapsed = int(time.time() - start)
                 progress = result.get("progress")
                 progress_str = f", progress={progress}%" if progress is not None else ""
                 logger.info(f"Video generation pending... ({elapsed}s elapsed{progress_str})")
-            time.sleep(VIDEO_POLL_INTERVAL)
+            _sleep(VIDEO_POLL_INTERVAL)
         else:
-            raise RuntimeError(f"Unexpected video status: {status}")
+            raise RuntimeError(
+                f"Unexpected video status: {status} (request_id: {request_id})"
+            )
 
-    raise RuntimeError(f"Video generation timed out after {VIDEO_POLL_TIMEOUT}s")
+    raise RuntimeError(
+        f"Video generation timed out after {VIDEO_POLL_TIMEOUT}s. "
+        f"The job may still complete - request_id: {request_id}"
+    )
 
-def download_video(url: str, save_path: str) -> str:
+def download_video(url: str, save_path: str, overwrite: bool = False) -> str:
     """Download a video from a temporary URL and save to disk. Returns absolute path."""
-    abs_path = os.path.abspath(save_path)
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    abs_path = resolve_save_path(save_path, overwrite)
 
-    response = requests.get(url, timeout=120)
+    response = request_with_retry("GET", url, timeout=120)
     if response.status_code != 200:
         raise RuntimeError(f"Video download failed (HTTP {response.status_code})")
 
-    with open(abs_path, "wb") as f:
-        f.write(response.content)
-    return abs_path
+    return write_file_atomic(abs_path, response.content)
 
 # ---------------------------------------------------------------------------
 # Audio (TTS / STT) helpers
@@ -859,7 +1215,8 @@ def call_grok_tts(
     if output_format:
         payload["output_format"] = output_format
 
-    response = requests.post(
+    response = request_with_retry(
+        "POST",
         XAI_TTS_API_URL,
         json=payload,
         headers={
@@ -921,15 +1278,18 @@ def call_grok_stt(
         filename = os.path.basename(abs_path)
         with open(abs_path, "rb") as f:
             files_list.append(("file", (filename, f)))
-            response = requests.post(
+            response = request_with_retry(
+                "POST",
                 XAI_STT_API_URL,
                 files=files_list,
                 data=data or None,
                 headers=headers,
                 timeout=TIMEOUT_AUDIO,
+                rewind=lambda: f.seek(0),
             )
     else:
-        response = requests.post(
+        response = request_with_retry(
+            "POST",
             XAI_STT_API_URL,
             files=files_list or None,
             data=data,
@@ -957,12 +1317,18 @@ def handle_chat(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     session_id = arguments.get("session_id")
 
+    ignored_overrides = []
     if session_id:
         if session_id not in sessions:
             return {
                 "error": f"Session '{session_id}' not found or expired. Start a new session by omitting session_id."
             }
         session = sessions[session_id]
+        # These only apply when the session is created; say so rather than
+        # silently dropping them.
+        for key in ("model", "system_prompt"):
+            if arguments.get(key):
+                ignored_overrides.append(key)
     else:
         session_id = generate_session_id()
         model = arguments.get("model", DEFAULT_MODEL)
@@ -976,23 +1342,42 @@ def handle_chat(arguments: Dict[str, Any]) -> Dict[str, Any]:
         if system_prompt:
             session["messages"].append({"role": "system", "content": system_prompt})
         sessions[session_id] = session
+        evict_sessions_over_limit()
 
     session["messages"].append({"role": "user", "content": message})
     session["last_active"] = time.time()
 
-    response_text = call_grok_chat(session["messages"], model=session["model"])
+    try:
+        response_text = call_grok_chat(
+            window_messages(session["messages"]), model=session["model"]
+        )
+    except Exception:
+        # Don't leave an orphaned user message with no reply in the history -
+        # it would be re-sent as context on every later turn.
+        session["messages"].pop()
+        raise
 
     session["messages"].append({"role": "assistant", "content": response_text})
 
     turns = sum(1 for m in session["messages"] if m["role"] == "user")
 
-    return {
+    result = {
         "response": response_text,
         "session_id": session_id,
         "model": session["model"],
         "turn": turns,
         "message_count": len(session["messages"]),
     }
+    if ignored_overrides:
+        result["warning"] = (
+            f"Ignored {', '.join(ignored_overrides)}: these apply only when a session "
+            f"is created. Omit session_id to start a new session with them."
+        )
+    if len(session["messages"]) > MAX_SESSION_MESSAGES:
+        result["context_window"] = (
+            f"Sending only the most recent {MAX_SESSION_MESSAGES} messages"
+        )
+    return result
 
 def handle_list_sessions() -> Dict[str, Any]:
     prune_expired_sessions()
@@ -1246,6 +1631,11 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "save_path": {
                             "type": "string",
                             "description": "File path to save the image. If not provided, auto-saves to output directory."
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Allow replacing an existing file at save_path (default: false - existing files are never overwritten).",
+                            "default": False
                         }
                     },
                     "required": ["prompt"]
@@ -1275,6 +1665,11 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "save_path": {
                             "type": "string",
                             "description": "File path to save the edited image. If not provided, auto-saves to output directory."
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Allow replacing an existing file at save_path (default: false - existing files are never overwritten).",
+                            "default": False
                         }
                     },
                     "required": ["prompt", "image_path"]
@@ -1314,9 +1709,20 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                             "type": "string",
                             "description": "Absolute path to a source image for image-to-video mode. The image will be animated based on the prompt."
                         },
+                        "model": {
+                            "type": "string",
+                            "description": "Video model to use (default: grok-imagine-video at $0.05/sec, supports text-to-video and image-to-video; grok-imagine-video-1.5 is higher quality at $0.08/sec but is image-to-video only, so image_path is required with it)",
+                            "enum": VIDEO_MODELS,
+                            "default": DEFAULT_VIDEO_MODEL
+                        },
                         "save_path": {
                             "type": "string",
                             "description": "File path to save the video. If not provided, auto-saves to output directory."
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Allow replacing an existing file at save_path (default: false - existing files are never overwritten).",
+                            "default": False
                         }
                     },
                     "required": ["prompt"]
@@ -1345,9 +1751,20 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                             "type": "string",
                             "description": "xAI file_id of a previously uploaded video (alternative to video_path / video_url)."
                         },
+                        "model": {
+                            "type": "string",
+                            "description": "Video model to use. Only grok-imagine-video supports editing ($0.05/sec); grok-imagine-video-1.5 is image-to-video only and is rejected here.",
+                            "enum": VIDEO_EDIT_MODELS,
+                            "default": DEFAULT_VIDEO_MODEL
+                        },
                         "save_path": {
                             "type": "string",
                             "description": "File path to save the edited video. If not provided, auto-saves to output directory."
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Allow replacing an existing file at save_path (default: false - existing files are never overwritten).",
+                            "default": False
                         }
                     },
                     "required": ["prompt"]
@@ -1355,7 +1772,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
             },
             {
                 "name": "analyze_image",
-                "description": "Analyze an image using Grok's vision capabilities. Uses your configured default model (Grok 4.3 and 4.20 support vision natively). Trigger: 'grok analyze image', 'grok describe image', or 'grok vision'.",
+                "description": "Analyze an image using Grok's vision capabilities. Uses your configured default model (Grok 4.5, 4.3 and 4.20 support vision natively). Trigger: 'grok analyze image', 'grok describe image', or 'grok vision'.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1371,8 +1788,8 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         },
                         "model": {
                             "type": "string",
-                            "description": "Vision model to use. Defaults to your configured model. Grok 4.3 and 4.20 variants all support vision natively.",
-                            "enum": ["grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4.20-multi-agent-0309"]
+                            "description": "Vision model to use. Defaults to your configured model. Grok 4.5, 4.3 and the 4.20 variants all support vision natively.",
+                            "enum": ["grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4.20-multi-agent-0309"]
                         }
                     },
                     "required": ["image_path"]
@@ -1420,6 +1837,11 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "save_path": {
                             "type": "string",
                             "description": "File path to save the audio. If not provided, auto-saves to GROK_AUDIO_OUTPUT_DIR with a timestamp.",
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Allow replacing an existing file at save_path (default: false - existing files are never overwritten).",
+                            "default": False,
                         },
                     },
                     "required": ["text"],
@@ -1502,6 +1924,7 @@ def handle_tools_list(request_id: Any) -> Dict[str, Any]:
                         "model": {
                             "type": "string",
                             "description": "Override model (first message only)",
+                            "enum": TEXT_MODELS,
                         },
                         "system_prompt": {
                             "type": "string",
@@ -1660,13 +2083,15 @@ Provide specific, actionable feedback on:
                 if allowed and excluded:
                     raise ValueError("Cannot use both allowed_domains and excluded_domains")
 
-                tool_kwargs = {}
+                # web_search takes domain filters nested under `filters`
+                # (unlike x_search, whose handle/date fields are top-level).
+                filters = {}
                 if allowed:
-                    tool_kwargs["allowed_domains"] = allowed[:5]
+                    filters["allowed_domains"] = allowed[:5]
                 if excluded:
-                    tool_kwargs["excluded_domains"] = excluded[:5]
+                    filters["excluded_domains"] = excluded[:5]
 
-                tools = [build_tool_spec("web_search", **tool_kwargs)]
+                tools = [build_tool_spec("web_search", filters=filters or None)]
                 resp = call_grok_responses(query, tools=tools, timeout=TIMEOUT_TOOLS)
                 result = resp["text"]
                 cites = format_citations(resp.get("citations", []))
@@ -1750,6 +2175,17 @@ Provide specific, actionable feedback on:
                 resolution = arguments.get("resolution")
                 model = arguments.get("model", "grok-imagine-image")
                 save_path = arguments.get("save_path")
+                overwrite = bool(arguments.get("overwrite", False))
+
+                # Fail before spending on generation if the target exists.
+                if save_path:
+                    for i in range(n):
+                        if n == 1:
+                            candidate = save_path
+                        else:
+                            base, ext = os.path.splitext(save_path)
+                            candidate = f"{base}_{i}{ext}"
+                        resolve_save_path(candidate, overwrite)
 
                 images = call_grok_image_gen(prompt, n, aspect_ratio, model, resolution)
 
@@ -1764,7 +2200,7 @@ Provide specific, actionable feedback on:
                     else:
                         path = get_auto_save_path(i)
 
-                    abs_path = save_image(img["b64_json"], path)
+                    abs_path = save_image(img["b64_json"], path, overwrite)
 
                     content_blocks.append({
                         "type": "text",
@@ -1789,21 +2225,23 @@ Provide specific, actionable feedback on:
                 image_path = arguments.get("image_path", "")
                 if not image_path.strip():
                     raise ValueError("image_path cannot be empty")
-                if not os.path.isfile(image_path):
-                    raise ValueError(f"File not found: {image_path}")
+                abs_image = validate_image_path(image_path)
 
                 model = arguments.get("model", "grok-imagine-image")
                 save_path = arguments.get("save_path")
+                overwrite = bool(arguments.get("overwrite", False))
+                if save_path:
+                    resolve_save_path(save_path, overwrite)
 
-                with open(image_path, "rb") as f:
+                mime_type = get_mime_type(abs_image)
+                with open(abs_image, "rb") as f:
                     image_base64 = base64.b64encode(f.read()).decode("utf-8")
-                mime_type = get_mime_type(image_path)
 
                 edited = call_grok_image_edit(prompt, image_base64, mime_type, model)
 
                 if not save_path:
                     save_path = get_auto_save_path()
-                abs_path = save_image(edited["b64_json"], save_path)
+                abs_path = save_image(edited["b64_json"], save_path, overwrite)
 
                 return {
                     "jsonrpc": "2.0",
@@ -1833,21 +2271,25 @@ Provide specific, actionable feedback on:
                 aspect_ratio = arguments.get("aspect_ratio")
                 resolution = arguments.get("resolution")
                 save_path = arguments.get("save_path")
+                overwrite = bool(arguments.get("overwrite", False))
+                if save_path:
+                    resolve_save_path(save_path, overwrite)
+                video_model = arguments.get("model", DEFAULT_VIDEO_MODEL)
 
-                # Image-to-video mode
+                # Image-to-video mode (validated inside call_grok_video_gen)
                 image_path = arguments.get("image_path")
-                if image_path:
-                    if not os.path.isfile(image_path):
-                        raise ValueError(f"Image file not found: {image_path}")
 
                 # Submit generation request
                 vid_request_id = call_grok_video_gen(
-                    prompt, duration, aspect_ratio, resolution, image_path
+                    prompt, duration, aspect_ratio, resolution, image_path, video_model
                 )
                 logger.info(f"Video generation submitted: {vid_request_id}")
 
                 # Poll for completion
-                video_result = poll_video_status(vid_request_id)
+                video_result = poll_video_status(
+                    vid_request_id,
+                    cancel_check=lambda: check_for_cancellation(request_id),
+                )
 
                 # Download and save
                 video_data = video_result.get("video", {})
@@ -1857,7 +2299,7 @@ Provide specific, actionable feedback on:
 
                 if not save_path:
                     save_path = get_video_save_path()
-                abs_path = download_video(video_url_result, save_path)
+                abs_path = download_video(video_url_result, save_path, overwrite)
 
                 video_duration = video_data.get("duration", "unknown")
                 mode = "image-to-video" if image_path else "text-to-video"
@@ -1888,16 +2330,25 @@ Provide specific, actionable feedback on:
                 video_url = arguments.get("video_url")
                 file_id = arguments.get("file_id")
                 save_path = arguments.get("save_path")
+                overwrite = bool(arguments.get("overwrite", False))
+                if save_path:
+                    resolve_save_path(save_path, overwrite)
+                video_model = arguments.get("model", DEFAULT_VIDEO_MODEL)
 
-                if video_path and not os.path.isfile(video_path):
-                    raise ValueError(f"Video file not found: {video_path}")
-
+                # video_path is validated inside call_grok_video_edit
                 vid_request_id = call_grok_video_edit(
-                    prompt, video_url=video_url, video_path=video_path, file_id=file_id
+                    prompt,
+                    video_url=video_url,
+                    video_path=video_path,
+                    file_id=file_id,
+                    model=video_model,
                 )
                 logger.info(f"Video edit submitted: {vid_request_id}")
 
-                video_result = poll_video_status(vid_request_id)
+                video_result = poll_video_status(
+                    vid_request_id,
+                    cancel_check=lambda: check_for_cancellation(request_id),
+                )
                 video_data = video_result.get("video", {})
                 video_url_result = video_data.get("url")
                 if not video_url_result:
@@ -1905,7 +2356,7 @@ Provide specific, actionable feedback on:
 
                 if not save_path:
                     save_path = get_video_save_path()
-                abs_path = download_video(video_url_result, save_path)
+                abs_path = download_video(video_url_result, save_path, overwrite)
 
                 source = "video_path" if video_path else ("video_url" if video_url else "file_id")
                 video_duration = video_data.get("duration", "unknown")
@@ -1929,16 +2380,15 @@ Provide specific, actionable feedback on:
                 image_path = arguments.get("image_path", "")
                 if not image_path.strip():
                     raise ValueError("image_path cannot be empty")
-                if not os.path.isfile(image_path):
-                    raise ValueError(f"File not found: {image_path}")
+                abs_image = validate_image_path(image_path)
 
                 prompt = arguments.get("prompt", "Describe this image in detail")
                 prompt = truncate_input(prompt, MAX_PROMPT_LENGTH, "prompt")
                 model = arguments.get("model")
 
-                with open(image_path, "rb") as f:
+                mime_type = get_mime_type(abs_image)
+                with open(abs_image, "rb") as f:
                     image_base64 = base64.b64encode(f.read()).decode("utf-8")
-                mime_type = get_mime_type(image_path)
 
                 result = call_grok_vision(image_base64, mime_type, prompt, model)
 
@@ -1947,7 +2397,7 @@ Provide specific, actionable feedback on:
                 result = f"Grok not available: {GROK_ERROR}"
             else:
                 text = arguments.get("text", "")
-                text = truncate_input(text, MAX_PROMPT_LENGTH, "text")
+                text = truncate_input(text, MAX_TTS_TEXT_LENGTH, "text")
                 if not text.strip():
                     raise ValueError("text cannot be empty")
 
@@ -1964,6 +2414,8 @@ Provide specific, actionable feedback on:
 
                 extension = TTS_FORMAT_EXTENSIONS.get(audio_format or "mp3", "mp3")
                 save_path = arguments.get("save_path") or get_audio_save_path(extension)
+                overwrite = bool(arguments.get("overwrite", False))
+                abs_path = resolve_save_path(save_path, overwrite)
 
                 audio_bytes = call_grok_tts(
                     text, voice, language,
@@ -1972,10 +2424,7 @@ Provide specific, actionable feedback on:
                     bitrate=bitrate,
                 )
 
-                abs_path = os.path.abspath(save_path)
-                os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-                with open(abs_path, "wb") as f:
-                    f.write(audio_bytes)
+                write_file_atomic(abs_path, audio_bytes)
 
                 voice_label = AVAILABLE_VOICES.get(voice, "custom cloned voice")
                 size_kb = len(audio_bytes) / 1024
@@ -2089,14 +2538,21 @@ Provide specific, actionable feedback on:
                 ]
             }
         }
+    except RequestCancelled as e:
+        # Per MCP, a cancelled request gets no response at all.
+        logger.info(f"Tool call cancelled for {tool_name}: {e}")
+        return None
     except Exception as e:
         logger.error(f"Tool call error for {tool_name}: {e}")
+        # MCP convention: tool *execution* failures are reported in-band with
+        # isError so the model can see the message and adjust. Top-level
+        # JSON-RPC errors are reserved for protocol-level problems.
         return {
             "jsonrpc": "2.0",
             "id": request_id,
-            "error": {
-                "code": -32603,
-                "message": str(e)
+            "result": {
+                "content": [{"type": "text", "text": f"ERROR: {e}"}],
+                "isError": True
             }
         }
 
@@ -2117,11 +2573,16 @@ def main():
         logger.warning(f"Grok initialization failed: {GROK_ERROR}")
 
     while not shutdown_requested:
+        request_id = None
         try:
-            line = sys.stdin.readline()
-            if not line:
-                logger.info("EOF received, shutting down")
-                break
+            # Messages buffered while a long job was running come first.
+            if pending_stdin_lines:
+                line = pending_stdin_lines.pop(0)
+            else:
+                line = sys.stdin.readline()
+                if not line:
+                    logger.info("EOF received, shutting down")
+                    break
 
             line = line.strip()
             if not line:
@@ -2131,6 +2592,15 @@ def main():
                 request = json.loads(line)
             except json.JSONDecodeError as e:
                 logger.warning(f"Invalid JSON received: {e}")
+                continue
+
+            if not isinstance(request, dict):
+                logger.warning("Received a non-object JSON-RPC message, ignoring")
+                send_response({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request: expected a JSON object"}
+                })
                 continue
 
             method = request.get("method")
@@ -2158,6 +2628,9 @@ def main():
                     "id": request_id,
                     "result": {"resources": []}
                 }
+            elif method == "ping":
+                # MCP base protocol: respond with an empty result object.
+                response = {"jsonrpc": "2.0", "id": request_id, "result": {}}
             elif method == "prompts/list":
                 response = {
                     "jsonrpc": "2.0",
@@ -2175,14 +2648,19 @@ def main():
                     }
                 }
 
-            send_response(response)
+            # handle_tool_call returns None for a cancelled request: no reply.
+            if response is not None:
+                send_response(response)
 
+        except ShutdownRequested:
+            logger.info("Shutdown signal received, stopping")
+            break
         except EOFError:
             logger.info("EOF received, shutting down")
             break
         except Exception as e:
             logger.error(f"Unexpected error in main loop: {e}")
-            if 'request_id' in locals() and request_id is not None:
+            if request_id is not None:
                 send_response({
                     "jsonrpc": "2.0",
                     "id": request_id,
