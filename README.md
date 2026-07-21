@@ -225,6 +225,7 @@ Generate images using Grok's image models.
 - `aspect_ratio` (optional) — `"1:1"`, `"16:9"`, `"9:16"`, `"4:3"`, `"3:4"`, `"3:2"`, `"2:3"`, `"2:1"`, `"1:2"`, `"19.5:9"`, `"9:19.5"`, `"20:9"`, `"9:20"`, `"auto"`
 - `resolution` (optional) — `"1k"` (~1024px) or `"2k"` (~2048px)
 - `save_path` (optional) — where to save the file; auto-saves with timestamp if omitted
+- `overwrite` (optional) — set `true` to replace an existing file at `save_path` (default: `false`)
 
 Images are saved to disk. The default save directory is `./generated-images/`, configurable via the `GROK_OUTPUT_DIR` environment variable.
 
@@ -237,6 +238,7 @@ Edit existing images using natural language with Grok's Imagine models. Supports
 - `image_path` (required) — absolute path to the source image
 - `model` (optional) — `"grok-imagine-image"` (default, $0.02/img) or `"grok-imagine-image-quality"` ($0.05/img)
 - `save_path` (optional) — where to save the edited image; auto-saves if omitted
+- `overwrite` (optional) — set `true` to replace an existing file at `save_path` (default: `false`)
 
 ## Video Generation
 
@@ -248,7 +250,9 @@ Generate videos using Grok's Imagine video model (`/v1/videos/generations`). Sup
 - `aspect_ratio` (optional) — `"1:1"`, `"16:9"` (default), `"9:16"`, `"4:3"`, `"3:4"`, `"3:2"`, `"2:3"`
 - `resolution` (optional) — `"480p"` (default), `"720p"`, or `"1080p"`
 - `image_path` (optional) — source image for image-to-video mode
+- `model` (optional) — `"grok-imagine-video"` (default, $0.05/sec, text-to-video and image-to-video) or `"grok-imagine-video-1.5"` ($0.08/sec, higher quality, **image-to-video only** — `image_path` is required with it)
 - `save_path` (optional) — where to save the video; auto-saves if omitted
+- `overwrite` (optional) — set `true` to replace an existing file at `save_path` (default: `false`)
 
 For editing an existing video, use the separate `edit_video` tool.
 
@@ -263,7 +267,9 @@ Apply natural-language edits to an existing MP4 (H.264 / H.265 / AV1) using `/v1
 - `video_path` — absolute path to a local MP4 (uploaded inline as base64)
 - `video_url` — public URL of the source MP4
 - `file_id` — xAI `file_id` of a previously uploaded video
+- `model` (optional) — only `"grok-imagine-video"` supports editing ($0.05/sec). `grok-imagine-video-1.5` is image-to-video only and is rejected here.
 - `save_path` (optional) — where to save the edited video; auto-saves if omitted
+- `overwrite` (optional) — set `true` to replace an existing file at `save_path` (default: `false`)
 
 ## Image Analysis (Vision)
 
@@ -286,6 +292,7 @@ Convert text to natural-sounding speech using Grok's TTS API. Supports inline sp
 - `sample_rate` (optional) — 8000, 16000, 22050, 24000 (default), 44100, or 48000 Hz
 - `bitrate` (optional, MP3 only) — 32, 64, 96, 128 (default), or 192 kbps
 - `save_path` (optional) — where to save the audio; auto-saves to `./generated-audio/` with a timestamp if omitted
+- `overwrite` (optional) — set `true` to replace an existing file at `save_path` (default: `false`)
 
 **Built-in voices:**
 
